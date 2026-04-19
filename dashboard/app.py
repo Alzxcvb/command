@@ -1,6 +1,7 @@
 """Streamlit dashboard. Run from repo root: streamlit run dashboard/app.py"""
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -51,6 +52,12 @@ with top_mid:
         delta=f"{len(spend['by_agent'])} agent(s) charged",
     )
     st.progress(pct)
+    anth_keyed = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    if anth_keyed:
+        st.caption("⚠️ ANTHROPIC_API_KEY set — Claude Code runs on **metered API** (real $).")
+    else:
+        st.caption("✓ No ANTHROPIC_API_KEY — Claude Code runs on your **Pro subscription** (quota, not $). "
+                   "Per-agent `cost $X` is informational (would-have-cost on metered API).")
 with top_right:
     if st.button("↻ Refresh now", use_container_width=True):
         st.rerun()
@@ -75,6 +82,26 @@ def _start_job_async(goal: str, total_budget: int, total_metered_cap: float,
 
 
 with st.sidebar:
+    st.header("Ralph — guide improver")
+    pending = pending_failure_count()
+    st.caption(f"Failure samples since last improvement: **{pending}**  ·  threshold: 3")
+    st.caption(f"Current guide sha: `{observations.current_guide_sha() or '—'}`")
+    col_r1, col_r2 = st.columns(2)
+    if col_r1.button("Improve now (force)", use_container_width=True, key="ralph-force"):
+        with st.spinner("Ralph reading the failure buffer…"):
+            r = ralph_improve(force=True)
+        st.session_state["last_ralph_result"] = r
+    if col_r2.button("Improve if ≥3", use_container_width=True, key="ralph-auto"):
+        with st.spinner("Ralph checking threshold…"):
+            r = ralph_improve(force=False)
+        st.session_state["last_ralph_result"] = r
+    if "last_ralph_result" in st.session_state:
+        st.json(st.session_state["last_ralph_result"])
+        if st.button("Dismiss Ralph result", key="ralph-dismiss"):
+            del st.session_state["last_ralph_result"]
+            st.rerun()
+
+    st.divider()
     st.header("Orchestrate (goal → fan-out)")
     with st.form("orchestrate_form", clear_on_submit=False):
         goal = st.text_area(
@@ -135,20 +162,6 @@ with st.sidebar:
                 st.error(f"Failed to spawn: {e}")
             st.rerun()
 
-    st.divider()
-    st.header("Ralph — guide improver")
-    pending = pending_failure_count()
-    st.caption(f"Failure samples since last improvement: **{pending}**")
-    st.caption(f"Current guide sha: `{observations.current_guide_sha() or '—'}`")
-    col_r1, col_r2 = st.columns(2)
-    if col_r1.button("Improve now (force)", use_container_width=True):
-        with st.spinner("Ralph reading the failure buffer…"):
-            r = ralph_improve(force=True)
-        st.json(r)
-    if col_r2.button("Improve if ≥3", use_container_width=True):
-        with st.spinner("Ralph checking threshold…"):
-            r = ralph_improve(force=False)
-        st.json(r)
 
 
 def _render_agent_card(a: dict, active: bool, *, key_prefix: str = "") -> None:
@@ -178,24 +191,32 @@ def _render_agent_card(a: dict, active: bool, *, key_prefix: str = "") -> None:
                 kill_agent(a["agent_id"])
                 st.rerun()
         else:
-            if head[4].button("↻ Retry", key=f"retry-{kp}",
-                              help="Re-spawn this task. Emits a 'retried' failure signal for Ralph."):
-                new_id = retry_agent(a["agent_id"], rationale="manual retry from dashboard")
-                if new_id:
-                    st.success(f"retried as {new_id}")
-                else:
-                    st.error("could not retry")
+            retried_key = f"retried-{a['agent_id']}"
+            if st.session_state.get(retried_key):
+                head[4].caption(f"↻ retried → `{st.session_state[retried_key]}`")
+            else:
+                if head[4].button("↻ Retry", key=f"retry-{kp}",
+                                  help="Re-spawn this task. Emits a 'retried' failure signal for Ralph."):
+                    new_id = retry_agent(a["agent_id"], rationale="manual retry from dashboard")
+                    if new_id:
+                        st.session_state[retried_key] = new_id
+                    else:
+                        st.session_state[retried_key] = "failed"
+                    st.rerun()
+        thumb_key = f"thumbed-{a['agent_id']}"
+        if st.session_state.get(thumb_key):
+            head[5].caption("👎 ✓")
+        else:
+            if head[5].button("👎", key=f"thumb-{kp}",
+                              help="Mark this output as bad. Feeds Ralph."):
+                observations.log_thumb(
+                    job_id=a.get("parent_job_id") or "",
+                    agent_id=a["agent_id"],
+                    direction="down",
+                    comment="dashboard 👎",
+                )
+                st.session_state[thumb_key] = True
                 st.rerun()
-        if head[5].button("👎", key=f"thumb-{kp}",
-                          help="Mark this output as bad. Feeds Ralph."):
-            observations.log_thumb(
-                job_id=a.get("parent_job_id") or "",
-                agent_id=a["agent_id"],
-                direction="down",
-                comment="dashboard 👎",
-            )
-            st.toast(f"{a['agent_id']} thumbed down")
-            st.rerun()
 
         with st.expander("Checkpoint · /btw inject · stdout tail"):
             cp = get_checkpoint(a["agent_id"])
@@ -269,7 +290,11 @@ else:
 
 agents = list_agents()
 active = [a for a in agents if a["status"] in ("starting", "running")]
-done = [a for a in agents if a["status"] not in ("starting", "running")]
+done = sorted(
+    [a for a in agents if a["status"] not in ("starting", "running")],
+    key=lambda a: a.get("updated_at") or a.get("created_at") or "",
+    reverse=True,
+)
 
 st.markdown(f"### Active agents ({len(active)})")
 if not active:
@@ -278,9 +303,9 @@ else:
     for a in active:
         _render_agent_card(a, active=True)
 
-st.markdown(f"### Completed ({len(done)})")
+st.markdown(f"### Completed ({len(done)})  — most recent first")
 if done:
-    for a in list(reversed(done))[:10]:
+    for a in done[:10]:
         _render_agent_card(a, active=False)
 
 if done_jobs:
