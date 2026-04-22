@@ -11,14 +11,23 @@ from typing import Iterator
 from .base import Done, Error, Runtime, RuntimeEvent, TextChunk, TokenUsage
 
 
+_EFFORT_LEVELS = {"low", "medium", "high"}
+
+
 class CodexRuntime(Runtime):
     name = "codex"
     metered = False
 
     def __init__(self, model: str | None = None, binary: str | None = None):
-        # `None` / "default" → let codex pick (account default model).
-        # ChatGPT-account users typically don't get gpt-5-codex.
-        self.model = None if not model or model == "default" else model
+        raw = model if model and model != "default" else None
+        # If the caller passed an effort level ("low"/"medium"/"high"), treat it
+        # as reasoning_effort rather than a model name.
+        if raw in _EFFORT_LEVELS:
+            self.model = None
+            self.effort: str | None = raw
+        else:
+            self.model = raw
+            self.effort = None
         self.binary = binary or os.environ.get("COMMAND_CODEX_BIN") or "codex"
 
     def spawn(self, task: str, system_prompt: str, agent_id: str, work_dir: Path) -> Popen:
@@ -27,6 +36,8 @@ class CodexRuntime(Runtime):
         cmd = [self.binary, "exec", "--json", "--skip-git-repo-check"]
         if self.model:
             cmd += ["-m", self.model]
+        if self.effort:
+            cmd += ["-c", f"model_reasoning_effort={self.effort}"]
         cmd.append(prompt)
         return subprocess.Popen(
             cmd,
@@ -63,7 +74,7 @@ class CodexRuntime(Runtime):
                 yield TokenUsage(
                     input_tokens=int(usage.get("input_tokens", 0)),
                     output_tokens=int(usage.get("output_tokens", 0)),
-                    model=self.model or "codex-default",
+                    model=self.model or f"codex/{self.effort or 'default'}",
                 )
             elif etype == "turn.failed":
                 err = evt.get("error") or {}

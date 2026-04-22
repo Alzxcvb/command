@@ -14,7 +14,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from agents.lifecycle import (  # noqa: E402
-    available_runtimes,
     continue_agent,
     inject_message,
     kill_agent,
@@ -27,7 +26,6 @@ from agents.registry import (  # noqa: E402
     get_result,
     list_agents,
 )
-from core.estimator import estimate  # noqa: E402
 from core.metered_ledger import DEFAULT_DAILY_CAP_USD, get_today_spend  # noqa: E402
 from orchestrator import observations  # noqa: E402
 from orchestrator.job import list_jobs, start_job  # noqa: E402
@@ -131,33 +129,26 @@ with st.sidebar:
             placeholder="Summarize the first 5 lines of README.md",
             height=90,
         )
-        runtimes = available_runtimes()
-        default_idx = runtimes.index("claude_code") if "claude_code" in runtimes else 0
-        runtime = st.selectbox("Runtime", runtimes, index=default_idx)
-        model = st.text_input(
-            "Model",
-            value="haiku" if runtime == "claude_code" else "",
-            help="For claude_code: haiku, sonnet, opus. For ollama: e.g. qwen2.5-coder:3b.",
-        )
+        provider = st.radio("Provider", ["Claude", "Codex"], horizontal=True, index=0)
+        if provider == "Claude":
+            runtime = "claude_code"
+            model = st.selectbox("Model", ["sonnet", "haiku", "opus"], index=0)
+        else:
+            runtime = "codex"
+            model = st.selectbox("Reasoning effort", ["medium", "low", "high"], index=0)
         budget = st.number_input("Token budget", min_value=500, max_value=200_000,
-                                 value=3000, step=500)
-        auto_est = st.checkbox("Use estimator to auto-pick runtime/model/budget", value=False)
+                                 value=8000, step=500)
         submitted = st.form_submit_button("Spawn", use_container_width=True)
         if submitted and task.strip():
             try:
-                if auto_est:
-                    est = estimate(task)
-                    runtime = est.recommended_runtime
-                    model = est.recommended_model
-                    budget = max(est.estimated_tokens * 2, 2000)
                 new_id = spawn_agent(
                     task=task.strip(),
                     runtime_name=runtime,
                     system_prompt="",
                     budget_tokens=int(budget),
-                    model=model or None,
+                    model=model,
                 )
-                st.success(f"Spawned {new_id} ({runtime} · {model or 'default'})")
+                st.success(f"Spawned {new_id} ({provider} · {model})")
             except Exception as e:
                 st.error(f"Failed to spawn: {e}")
             st.rerun()
