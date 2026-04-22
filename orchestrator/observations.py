@@ -127,13 +127,18 @@ def read_all() -> list[dict]:
     return out
 
 
-def failure_samples(since_guide_sha: Optional[str] = None) -> list[dict]:
+def failure_samples(since_ts: Optional[str] = None) -> list[dict]:
     """Build Ralph's buffer: failure-tagged samples only.
 
     A sample is a dispatch joined to its outcome / retry / thumb, kept only
     if at least one fail signal is present. This is the whole point of the
     filter — successful prompts are dropped here and never consume Ralph's
     tokens.
+
+    `since_ts` is the ISO timestamp of the last Ralph improvement. Only dispatches
+    that occurred AFTER that timestamp are considered new. This avoids the
+    guide-sha confusion where recording the new SHA after improvement causes all
+    subsequent same-SHA dispatches to be skipped.
     """
     events = read_all()
     dispatches: dict[str, dict] = {}
@@ -154,9 +159,8 @@ def failure_samples(since_guide_sha: Optional[str] = None) -> list[dict]:
 
     samples = []
     for agent_id, disp in dispatches.items():
-        if since_guide_sha and disp.get("guide_sha") == since_guide_sha:
-            # Already-seen samples when filtering for "new since last improvement"
-            continue
+        if since_ts and disp.get("timestamp", "") <= since_ts:
+            continue  # Skip dispatches that predate the last Ralph improvement
         out = outcomes.get(agent_id)
         retries = retries_for.get(agent_id, [])
         thumbs = thumbs_for.get(agent_id, [])
@@ -185,8 +189,28 @@ def failure_samples(since_guide_sha: Optional[str] = None) -> list[dict]:
     return samples
 
 
+def last_improvement_ts() -> Optional[str]:
+    """ISO timestamp of the latest dispatch that was consumed by the last Ralph run.
+
+    This is stored as `processed_through_ts` in last_improvement.json. All
+    dispatches with timestamp <= this value have already been fed to Ralph;
+    only dispatches with timestamp > this value are "new" failures.
+    """
+    marker = _REPO_ROOT / "state" / "ralph" / "last_improvement.json"
+    if not marker.exists():
+        return None
+    try:
+        d = json.loads(marker.read_text())
+        # processed_through_ts=null means "all samples are new"
+        if "processed_through_ts" in d:
+            return d["processed_through_ts"]  # may be None — that's fine
+        return None  # legacy files without the field: treat everything as new
+    except Exception:
+        return None
+
+
 def last_improvement_guide_sha() -> Optional[str]:
-    """Read the guide SHA at the time of the last Ralph improvement commit."""
+    """Guide SHA at the time of the last Ralph improvement (kept for dashboard compat)."""
     marker = _REPO_ROOT / "state" / "ralph" / "last_improvement.json"
     if not marker.exists():
         return None
@@ -196,14 +220,31 @@ def last_improvement_guide_sha() -> Optional[str]:
         return None
 
 
-def record_improvement(guide_sha: str, improvement_agent_id: str, n_samples: int) -> None:
+def record_improvement(guide_sha: str, improvement_agent_id: str, n_samples: int,
+                       processed_through_ts: Optional[str] = None) -> None:
+    """Record a Ralph improvement run.
+
+    `processed_through_ts` is the max dispatch timestamp from the consumed sample
+    batch. Only dispatches AFTER this timestamp are "new" on the next Ralph pass.
+    If no samples were consumed (force-run with empty buffer), the value is left
+    unchanged so the same samples are still eligible next time.
+    """
     _ensure_dir()
-    (_REPO_ROOT / "state" / "ralph" / "last_improvement.json").write_text(json.dumps({
+    marker = _REPO_ROOT / "state" / "ralph" / "last_improvement.json"
+    prev = {}
+    if marker.exists():
+        try:
+            prev = json.loads(marker.read_text())
+        except Exception:
+            pass
+    data = {
         "guide_sha": guide_sha,
         "improvement_agent_id": improvement_agent_id,
         "n_samples_consumed": n_samples,
-        "timestamp": _now_iso(),
-    }, indent=2))
+        "ran_at": _now_iso(),
+        "processed_through_ts": processed_through_ts or prev.get("processed_through_ts"),
+    }
+    marker.write_text(json.dumps(data, indent=2))
 
 
 def log_dispatch(*, job_id: str, agent_id: str, goal: str, drafted_task: str,

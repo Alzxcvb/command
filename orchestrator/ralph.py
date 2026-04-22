@@ -119,8 +119,8 @@ def _append_changelog(entry: str) -> None:
 
 
 def pending_failure_count() -> int:
-    last = observations.last_improvement_guide_sha()
-    samples = observations.failure_samples(since_guide_sha=last)
+    last_ts = observations.last_improvement_ts()
+    samples = observations.failure_samples(since_ts=last_ts)
     return len(samples)
 
 
@@ -134,8 +134,8 @@ def improve(
     timeout: float = 1800,
 ) -> dict:
     """Run one Ralph pass. Returns a status dict."""
-    last = observations.last_improvement_guide_sha()
-    samples = observations.failure_samples(since_guide_sha=last)
+    last_ts = observations.last_improvement_ts()
+    samples = observations.failure_samples(since_ts=last_ts)
     if len(samples) < min_samples and not force:
         return {
             "status": "skipped",
@@ -167,6 +167,13 @@ def improve(
             return {"status": "timeout", "agent_id": agent_id, "samples": len(samples)}
         time.sleep(1.0)
 
+    # Compute max dispatch timestamp from this batch so future calls skip these samples.
+    processed_through_ts: Optional[str] = None
+    if samples:
+        processed_through_ts = max(
+            s["dispatch"].get("timestamp", "") for s in samples
+        ) or None
+
     result = get_result(agent_id) or {}
     output = result.get("final_text", "") or ""
     revised = _extract_revised(output)
@@ -180,7 +187,8 @@ def improve(
 
     if revised == current_guide:
         new_sha = observations.current_guide_sha()
-        observations.record_improvement(new_sha, agent_id, len(samples))
+        observations.record_improvement(new_sha, agent_id, len(samples),
+                                        processed_through_ts=processed_through_ts)
         return {
             "status": "no_change",
             "agent_id": agent_id,
@@ -194,7 +202,8 @@ def improve(
     # Summary = everything before the first marker.
     summary = output.split(REVISED_START, 1)[0].strip() or "guide revision"
     committed = _git_commit_guide(summary.splitlines()[0][:100])
-    observations.record_improvement(new_sha, agent_id, len(samples))
+    observations.record_improvement(new_sha, agent_id, len(samples),
+                                    processed_through_ts=processed_through_ts)
     _append_changelog(
         f"## {new_sha}  ({len(samples)} samples, agent {agent_id})\n\n{summary}"
     )
