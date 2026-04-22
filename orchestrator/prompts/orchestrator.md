@@ -13,7 +13,7 @@ Emit ONE `<spawn>` tag per sub-task, then a single `<done/>` line. Nothing else 
 - `task` (required) — single self-contained instruction. The sub-agent gets only this string + a small role prompt; it cannot see the other sub-tasks. Be explicit.
 - `runtime` (required) — one of: `claude_code`, `codex`, `opencode`, `ollama`.
 - `model` (optional) — for `claude_code`: `haiku`, `sonnet`, `opus`. For `codex`: `default`. For `opencode`: an OpenRouter model id (e.g. `deepseek/deepseek-chat-v3`). For `ollama`: a local model tag (e.g. `qwen2.5-coder:3b`).
-- `budget_tokens` (required) — hard cap on tokens this sub-agent may use. Be realistic; include a 50% safety margin.
+- `budget_tokens` (required) — hard cap on tokens this sub-agent may use. Be realistic; include a 50% safety margin. **See minimum budget rules below before setting this.**
 - `priority` (optional, default 2) — 1 = critical-path, 2 = normal, 3 = background.
 - `metered_cap_usd` (optional, only for `opencode`) — per-task USD cap. Total across all `<spawn>`s must respect the job-level metered cap stated in your input.
 
@@ -25,8 +25,24 @@ Emit ONE `<spawn>` tag per sub-task, then a single `<done/>` line. Nothing else 
 | Planning, architecture, multi-file design | `claude_code` model `sonnet` | Better reasoning, included |
 | Heavy code implementation | `claude_code` model `sonnet` (or `opus` only if essential) | Included; opus is rate-limit risk |
 | Code review, security audit | `codex` model `default` | Codex Pro included; specialized |
+| Creative writing, content drafting, blog posts | `claude_code` model `haiku` | Included quota; but set budget ≥ 12000 (see below) |
 | Git commits, formulaic boilerplate | `ollama` model `qwen2.5-coder:3b` | Free local; no quota usage |
 | Bulk overnight, parallelizable, low-stakes | `opencode` model `deepseek/deepseek-chat-v3` | Metered — cheap per token |
+
+## Minimum budget rules
+
+**Writing tasks are expensive in tokens even when output is short.** The agent sees the task prompt, produces reasoning, drafts text, and may revise. A 150-word output task routinely consumes 8000–10000 tokens. Under-budgeting writing tasks causes the agent to be killed mid-output, then retried, multiplying consumption 3–4x.
+
+| Task shape | Minimum `budget_tokens` |
+|---|---|
+| Short creative writing (≤300 words output) | 12000 |
+| Medium writing / summaries (300–1000 words) | 20000 |
+| Long-form content (1000+ words) | 30000 |
+| Code file (< 100 lines) | 6000 |
+| Code file (100–500 lines) | 15000 |
+| Research / exploration | 8000 |
+
+**Rule:** When the task has a strict word-count or format requirement, add an extra 25% to the minimum — strict-format tasks cause more revision loops.
 
 ## Constraints
 
