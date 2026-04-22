@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .classifier import classify
 from .models import get_best_model_for_task, get_ranked_models
-from .providers import OpenRouterProvider
+from .providers import OpenRouterProvider, get_provider_for
 from .types import Complexity, RouterResponse, RoutingDecision
 
 
@@ -89,8 +89,9 @@ class Router:
         if dry_run:
             return decision
 
-        # Step 4: Call the model
-        content, latency_ms = self.provider.call(model, prompt)
+        # Step 4: Call the model via the best provider (direct if keyed, OpenRouter fallback)
+        inference_provider = get_provider_for(model)
+        content, latency_ms = inference_provider.call(model, prompt)
 
         # Estimate cost (rough: assume ~prompt_len/4 input tokens, ~response_len/4 output tokens)
         est_input_tokens = len(prompt) / 4

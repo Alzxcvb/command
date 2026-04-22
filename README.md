@@ -37,6 +37,58 @@ pip install -r requirements.txt
 echo "OPENROUTER_API_KEY=your-key" > .env
 ```
 
+## Command runtime
+
+The `command/` tree adds a full local agent platform on top of the router:
+live dashboard, per-agent token budget, spawn/kill/continue, and multi-provider
+inference. Router picks the cheapest adequate model per turn; the runtime
+tracks, displays, and enforces it.
+
+### Start the dashboard
+
+```bash
+.venv/bin/pip install streamlit
+.venv/bin/streamlit run dashboard/app.py
+# then open http://localhost:8501 — live agent state, budget usage, /btw inject.
+```
+
+### Spawn an agent from the CLI
+
+```bash
+.venv/bin/python -m cli spawn "Summarize docs/IMPLEMENTATION_PLAN.md in 3 bullets"
+.venv/bin/python -m cli list          # see active + completed agents
+.venv/bin/python -m cli kill <id>     # stop one
+```
+
+### Switching providers
+
+The router picks the backend for each model automatically. Set keys for the
+ones you want to use; it falls back to OpenRouter for anything else.
+
+```bash
+# Direct APIs (use when you have the key — cheapest + fastest path):
+export ANTHROPIC_API_KEY=sk-ant-...     # Claude models → Anthropic direct
+export OPENAI_API_KEY=sk-...            # GPT models → OpenAI direct
+export OLLAMA_BASE_URL=http://localhost:11434   # local models → Ollama
+
+# Universal fallback (always set this one):
+export OPENROUTER_API_KEY=sk-or-...
+
+# Force a single backend for testing / fallback:
+export COMMAND_PROVIDER=openrouter      # or: anthropic | openai | ollama
+```
+
+Order of resolution:
+
+1. `COMMAND_PROVIDER` env override (if set) — forces one backend for every call.
+2. Direct provider matching `model.provider` (Anthropic / OpenAI / Ollama) — used when the relevant key is set.
+3. **OpenRouter fallback** — used for anything else, or if the direct key is missing.
+
+Local models are free. Ollama gets a pass as long as it can answer; route your
+git-commit-message / boilerplate turns to `local/phi-3` and the router will
+call your machine instead of the cloud.
+
+
 ### CLI Usage
 
 ```bash

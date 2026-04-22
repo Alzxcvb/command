@@ -7,3 +7,16 @@ dist/
 *.egg-info/
 node_modules/
 .pytest_cache/
+
+# Command runtime state and ralph loop scratch
+state/
+.ralph/
+
+# Local study material (large, not source code)
+reference/
+
+# Claude Code session state
+.claude/
+
+# Task scratch files
+tasks/
