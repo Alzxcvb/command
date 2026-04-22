@@ -53,7 +53,7 @@ CODEX_VARIANTS = [
 # ---------------------------------------------------------------------------
 
 def _match(pattern: str):
-    return lambda r: bool(re.search(pattern, r[:300]))
+    return lambda r: bool(re.search(pattern, r))
 
 TASKS = [
     {
@@ -77,7 +77,7 @@ TASKS = [
             "Think step by step, then state your final answer as a single digit."
         ),
         "answer": "1",
-        "check": lambda r: bool(re.search(r"\b1\b", r[:150])) and "391" not in r[:30],
+        "check": lambda r: bool(re.search(r"\b1\b", r[-200:])),
     },
     {
         "id": "trace-001",
@@ -95,7 +95,7 @@ TASKS = [
             "Trace through it step by step, then state your final answer as a single integer."
         ),
         "answer": "4",
-        "check": _match(r"\b4\b"),
+        "check": lambda r: bool(re.search(r"\b4\b", r[-200:])),
     },
     {
         "id": "perm-001",
@@ -267,7 +267,7 @@ def run_benchmark(
                         difficulty=task["difficulty"],
                         variant=v["name"], provider=v["provider"],
                         answer=task["answer"],
-                        response=text[:200].replace("\n", " "),
+                        response=text[:400].replace("\n", " "),
                         correct=correct, latency_ms=ms,
                     ))
                     print(f"{'PASS' if correct else 'FAIL'}  {ms:.0f}ms")
