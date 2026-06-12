@@ -88,10 +88,12 @@ def start_job(
     orchestrator_model: str = "sonnet",
     orchestrator_budget: int = 8000,
     dry_run: bool = False,
+    project_hint: str = "",
 ) -> str:
     """Spawn orchestrator → parse breakdown → fan out sub-agents → return job_id.
 
     Blocks until all sub-agents complete (or fail). Use dry_run=True to stop after parsing.
+    project_hint groups jobs in historical analytics (e.g. "polycrisis", "mdac").
     """
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     job_dir = _job_dir(job_id)
@@ -100,6 +102,7 @@ def start_job(
     meta = {
         "job_id": job_id,
         "goal": goal,
+        "project_hint": project_hint,
         "status": "orchestrating",
         "total_budget_tokens": total_budget_tokens,
         "total_metered_cap_usd": total_metered_cap_usd,
@@ -168,8 +171,26 @@ def start_job(
     )
     (job_dir / "tasks.md").write_text(_render_tasks_md(goal, bd, problems, final))
     print(f"[job {job_id}] done. summary: {summary}")
+    _append_analytics(job_id, project_hint, summary)
     _maybe_auto_improve(job_id)
     return job_id
+
+
+def _append_analytics(job_id: str, project_hint: str, summary: dict) -> None:
+    """Append one line per completed job to state/analytics.jsonl for the dashboard."""
+    try:
+        line = {
+            "job_id": job_id,
+            "project_hint": project_hint or "unlabeled",
+            "task_count": int(summary.get("total", 0)),
+            "total_tokens": int(summary.get("tokens_used", 0)),
+            "cost_usd": float(summary.get("cost_usd", 0.0)),
+            "ts": _now_iso(),
+        }
+        with (STATE_ROOT / "analytics.jsonl").open("a") as f:
+            f.write(json.dumps(line) + "\n")
+    except Exception as e:
+        print(f"[analytics error] {e!r}")
 
 
 def _maybe_auto_improve(job_id: str) -> None:
@@ -238,6 +259,8 @@ def _dispatch(bd: Breakdown, job_id: str) -> list[str]:
             print(f"  · spawned {aid}  runtime={s.runtime} model={s.model or '—'} budget={budget_tokens} ({budget_source})")
             m = _read_agent_meta(aid)
             m["budget_source"] = budget_source
+            if r is not None:
+                m["task_type"] = r.task_type
             _write_agent_meta(aid, m)
             observations.log_dispatch(
                 job_id=job_id,

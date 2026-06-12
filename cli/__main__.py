@@ -139,7 +139,7 @@ def cmd_status(args) -> int:
     for a in agents:
         cap = a.get("budget_tokens") or 0
         used = a.get("tokens_used") or 0
-        print(f"{a['agent_id']:14}  {a['status']:18}  {a['runtime']:12}  {(a.get('model') or ''):10}  {used:>8,} / {cap:<8,}  {a['task'][:60]}")
+        print(f"{a['agent_id']:14}  {a['status']:18}  {(a.get('runtime') or ''):12}  {(a.get('model') or ''):10}  {used:>8,} / {cap:<8,}  {(a.get('task') or '')[:60]}")
 
     spend = get_today_spend()
     print(f"\n[metered today] ${spend['total_usd']:.4f} / ${DEFAULT_DAILY_CAP_USD:.2f}  ({len(spend['by_agent'])} agents)")
@@ -183,6 +183,7 @@ def cmd_orchestrate(args) -> int:
         orchestrator_model=args.orchestrator_model,
         orchestrator_budget=args.orchestrator_budget,
         dry_run=args.dry_run,
+        project_hint=args.project or "",
     )
     print(f"\n[job] {job_id}  → state/jobs/{job_id}/")
     return 0
@@ -297,6 +298,7 @@ def main() -> int:
 
     s = sub.add_parser("orchestrate", help="Break a goal into parallel sub-agents")
     s.add_argument("goal")
+    s.add_argument("--project", default=None, help="project label for historical analytics grouping")
     s.add_argument("--budget-total", type=int, default=100_000, dest="budget_total")
     s.add_argument("--metered-cap", type=float, default=0.50, dest="metered_cap")
     s.add_argument("--orchestrator-model", default="sonnet", dest="orchestrator_model")

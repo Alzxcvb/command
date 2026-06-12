@@ -1,6 +1,7 @@
 """Streamlit dashboard. Run from repo root: streamlit run dashboard/app.py"""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
@@ -63,7 +64,7 @@ with top_right:
 
 
 def _start_job_async(goal: str, total_budget: int, total_metered_cap: float,
-                     orch_model: str) -> None:
+                     orch_model: str, project_hint: str = "") -> None:
     """Run start_job in a thread so the Streamlit request returns immediately."""
     t = threading.Thread(
         target=start_job,
@@ -72,6 +73,7 @@ def _start_job_async(goal: str, total_budget: int, total_metered_cap: float,
             "total_budget_tokens": total_budget,
             "total_metered_cap_usd": total_metered_cap,
             "orchestrator_model": orch_model,
+            "project_hint": project_hint,
         },
         daemon=True,
         name="job-starter",
@@ -107,6 +109,7 @@ with st.sidebar:
             placeholder="e.g. Draft a 1500-word polycrisis explainer blog post with 3 citations.",
             height=110,
         )
+        project_hint = st.text_input("Project label (for analytics)", placeholder="e.g. polycrisis")
         col_a, col_b = st.columns(2)
         total_budget = col_a.number_input("Total tokens", min_value=5_000, max_value=500_000,
                                           value=50_000, step=5_000)
@@ -115,7 +118,8 @@ with st.sidebar:
         orch_model = st.selectbox("Orchestrator model", ["sonnet", "opus", "haiku"], index=0)
         if st.form_submit_button("Orchestrate", use_container_width=True) and goal.strip():
             try:
-                _start_job_async(goal.strip(), int(total_budget), float(total_cap), orch_model)
+                _start_job_async(goal.strip(), int(total_budget), float(total_cap), orch_model,
+                                 project_hint.strip())
                 st.success("Job started — orchestrator spinning up.")
             except Exception as e:
                 st.error(f"Failed to orchestrate: {e}")
@@ -160,7 +164,7 @@ def _render_agent_card(a: dict, active: bool, *, key_prefix: str = "") -> None:
     with st.container(border=True):
         head = st.columns([3, 2, 2, 2, 1, 1, 1])
         head[0].markdown(f"**`{a['agent_id']}`**")
-        head[0].caption(a["task"][:160])
+        head[0].caption((a.get("task") or "")[:160])
         head[1].markdown(f"runtime: `{a['runtime']}`")
         head[1].caption(f"model: `{a.get('model') or '—'}`")
         used = a.get("tokens_used") or 0
@@ -238,71 +242,122 @@ def _render_agent_card(a: dict, active: bool, *, key_prefix: str = "") -> None:
                     st.json(res)
 
 
-# --- Active jobs (orchestrator fan-outs) ---
-jobs = list_jobs()
-active_jobs = [j for j in jobs if j.get("status") in ("orchestrating", "running")]
-done_jobs = [j for j in jobs if j.get("status") not in ("orchestrating", "running")]
+def _render_agents_tab() -> None:
+    # --- Active jobs (orchestrator fan-outs) ---
+    jobs = list_jobs()
+    active_jobs = [j for j in jobs if j.get("status") in ("orchestrating", "running")]
+    done_jobs = [j for j in jobs if j.get("status") not in ("orchestrating", "running")]
 
-st.markdown(f"### Active jobs ({len(active_jobs)})")
-if not active_jobs:
-    st.caption("No fan-out jobs running. Use **Orchestrate** in the sidebar to dispatch a goal.")
-else:
-    for j in active_jobs:
-        with st.container(border=True):
-            top = st.columns([4, 2, 2])
-            top[0].markdown(f"**`{j['job_id']}`** · {j.get('status')}")
-            top[0].caption(j.get("goal", "")[:200])
-            top[1].metric("Children", len(j.get("child_agent_ids") or []))
-            top[2].metric("Budget tokens", f"{j.get('total_budget_tokens', 0):,}")
+    st.markdown(f"### Active jobs ({len(active_jobs)})")
+    if not active_jobs:
+        st.caption("No fan-out jobs running. Use **Orchestrate** in the sidebar to dispatch a goal.")
+    else:
+        for j in active_jobs:
+            with st.container(border=True):
+                top = st.columns([4, 2, 2])
+                top[0].markdown(f"**`{j['job_id']}`** · {j.get('status')}")
+                top[0].caption(j.get("goal", "")[:200])
+                top[1].metric("Children", len(j.get("child_agent_ids") or []))
+                top[2].metric("Budget tokens", f"{j.get('total_budget_tokens', 0):,}")
 
-            child_ids = j.get("child_agent_ids") or []
-            orch_id = j.get("orchestrator_agent_id")
-            all_ids = ([orch_id] if orch_id else []) + child_ids
-            if all_ids:
-                st.caption("Side-by-side view of orchestrator + children (running in parallel):")
-                cols = st.columns(max(1, min(len(all_ids), 3)))
-                for idx, aid in enumerate(all_ids):
-                    a = get_agent(aid)
-                    if not a:
-                        continue
-                    with cols[idx % len(cols)]:
-                        role = "orchestrator" if aid == orch_id else f"child {idx}"
-                        st.markdown(f"**{role}** · `{aid}`")
-                        st.caption(f"{a.get('runtime')} / {a.get('model') or '—'}")
-                        st.caption(f"status: **{a.get('status')}**")
-                        used_c = a.get("tokens_used") or 0
-                        cap_c = a.get("budget_tokens") or 0
-                        if cap_c:
-                            st.progress(min(1.0, used_c / cap_c))
-                        st.caption(f"{used_c:,} / {cap_c:,} tok")
-                        log = get_log(aid, "stdout", tail_chars=800)
-                        if log:
-                            st.code(log[-500:], language="text")
+                child_ids = j.get("child_agent_ids") or []
+                orch_id = j.get("orchestrator_agent_id")
+                all_ids = ([orch_id] if orch_id else []) + child_ids
+                if all_ids:
+                    st.caption("Side-by-side view of orchestrator + children (running in parallel):")
+                    cols = st.columns(max(1, min(len(all_ids), 3)))
+                    for idx, aid in enumerate(all_ids):
+                        a = get_agent(aid)
+                        if not a:
+                            continue
+                        with cols[idx % len(cols)]:
+                            role = "orchestrator" if aid == orch_id else f"child {idx}"
+                            st.markdown(f"**{role}** · `{aid}`")
+                            st.caption(f"{a.get('runtime')} / {a.get('model') or '—'}")
+                            st.caption(f"status: **{a.get('status')}**")
+                            used_c = a.get("tokens_used") or 0
+                            cap_c = a.get("budget_tokens") or 0
+                            if cap_c:
+                                st.progress(min(1.0, used_c / cap_c))
+                            st.caption(f"{used_c:,} / {cap_c:,} tok")
+                            log = get_log(aid, "stdout", tail_chars=800)
+                            if log:
+                                st.code(log[-500:], language="text")
 
-agents = list_agents()
-active = [a for a in agents if a["status"] in ("starting", "running")]
-done = sorted(
-    [a for a in agents if a["status"] not in ("starting", "running")],
-    key=lambda a: a.get("updated_at") or a.get("created_at") or "",
-    reverse=True,
-)
+    agents = list_agents()
+    active = [a for a in agents if a["status"] in ("starting", "running")]
+    done = sorted(
+        [a for a in agents if a["status"] not in ("starting", "running")],
+        key=lambda a: a.get("updated_at") or a.get("created_at") or "",
+        reverse=True,
+    )
 
-st.markdown(f"### Active agents ({len(active)})")
-if not active:
-    st.info('No agents currently running. Spawn one with: `python -m cli spawn "your task"`')
-else:
-    for a in active:
-        _render_agent_card(a, active=True)
+    st.markdown(f"### Active agents ({len(active)})")
+    if not active:
+        st.info('No agents currently running. Spawn one with: `python -m cli spawn "your task"`')
+    else:
+        for a in active:
+            _render_agent_card(a, active=True)
 
-st.markdown(f"### Completed ({len(done)})  — most recent first")
-if done:
-    for a in done[:10]:
-        _render_agent_card(a, active=False)
+    st.markdown(f"### Completed ({len(done)})  — most recent first")
+    if done:
+        for a in done[:10]:
+            _render_agent_card(a, active=False)
 
-if done_jobs:
-    with st.expander(f"Completed jobs ({len(done_jobs)})"):
-        for j in list(reversed(done_jobs))[:10]:
-            st.markdown(f"- `{j['job_id']}` · **{j.get('status')}** · {j.get('goal', '')[:120]}")
+    if done_jobs:
+        with st.expander(f"Completed jobs ({len(done_jobs)})"):
+            for j in list(reversed(done_jobs))[:10]:
+                st.markdown(f"- `{j['job_id']}` · **{j.get('status')}** · {j.get('goal', '')[:120]}")
+
+
+def _render_analytics() -> None:
+    """Historical analytics: one jsonl line per completed job + task types from agent metas."""
+    import pandas as pd
+
+    path = _REPO_ROOT / "state" / "analytics.jsonl"
+    rows = []
+    if path.exists():
+        for ln in path.read_text().splitlines():
+            try:
+                rows.append(json.loads(ln))
+            except json.JSONDecodeError:
+                continue
+
+    if not rows:
+        st.info("No completed jobs logged yet — analytics accrue when an orchestrated job finishes.")
+    else:
+        df = pd.DataFrame(rows)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Jobs logged", len(df))
+        m2.metric("Total tokens", f"{int(df['total_tokens'].sum()):,}")
+        m3.metric("Total cost", f"${df['cost_usd'].sum():.4f}")
+
+        col_l, col_r = st.columns(2)
+        with col_l:
+            st.markdown("**Cost per project ($)**")
+            st.bar_chart(df.groupby("project_hint")["cost_usd"].sum())
+        with col_r:
+            st.markdown("**Tokens per job over time**")
+            trend = df[["ts", "total_tokens"]].copy()
+            trend["ts"] = trend["ts"].str[:16]
+            st.line_chart(trend.set_index("ts"))
+
+    typed = [a for a in list_agents() if a.get("task_type")]
+    if typed:
+        st.markdown("**Tokens per task type** (recorded at dispatch by the estimator)")
+        tdf = pd.DataFrame(
+            [{"task_type": a["task_type"], "tokens": a.get("tokens_used") or 0} for a in typed]
+        )
+        st.bar_chart(tdf.groupby("task_type")["tokens"].sum())
+    else:
+        st.caption("Tokens per task type appears once jobs dispatch through the estimator.")
+
+
+tab_agents, tab_analytics = st.tabs(["Agents", "Analytics"])
+with tab_agents:
+    _render_agents_tab()
+with tab_analytics:
+    _render_analytics()
 
 if auto:
     time.sleep(2)
