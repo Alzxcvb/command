@@ -52,14 +52,19 @@ Orchestrator fan-out + Ralph self-improvement loop + Streamlit dashboard all run
 - [x] `cli/__main__.py` — spawn, status, kill, btw, continue, orchestrate, jobs, estimate
 - [x] New in 2026-04-20: retry, thumb up|down, ralph-improve --force
 
-### Phase 5: What remains
-- [ ] Re-run 4-vignette fan-out test (verify visible parallel decomposition)
+### Phase 5: 2026-06-12 session — DONE
+- [x] `config/routing_rules.yaml` + `config/budget_limits.yaml` created (estimator crashed without them)
+- [x] Estimator integration into `start_job()` — per-task budget floor, `budget_source` in agent meta
+- [x] CLI daemon for detached spawns — `commandd.py` PID watchdog (`docs/DAEMON.md`)
+- [x] Historical analytics — `state/analytics.jsonl` + dashboard Analytics tab (cost per project, tokens per task type)
+- [x] Phase 3a static mid-turn routing — `core/turn_router.py` rule table + turn ledger + savings widget (no live caller yet; see `docs/BLOCKERS.md`)
+
+### Phase 6: What remains
+- [ ] Re-run 4-vignette fan-out test (verify visible parallel decomposition) — needs live agents, run manually
 - [ ] If orchestrator still under-decomposes: Ralph force-improve → verify loop closes
-- [ ] Commit uncommitted router work (`router/providers.py`, `router/router.py`, `.env.example`, etc.)
-- [ ] Commit untracked scaffolding (`agents/__init__.py`, `agents/registry.py`, `agents/runtimes/`, `core/`, `dashboard/__init__.py`, `docs/`, `orchestrator/__init__.py`, `orchestrator/breakdown.py`, `reference/`)
-- [ ] CLI daemon for detached spawns — current `cli spawn --detach` orphans monitor thread
-- [ ] Estimator integration into `start_job()` so sub-task budgets get real numbers
-- [ ] Historical analytics (cost per project, tokens per task type)
+- [ ] Live detached-spawn test through commandd (see `docs/BLOCKERS.md`)
+- [ ] Wire `route_turn()` into a harness loop once Command owns per-turn API calls
+- [ ] Close the commandd budget-enforcement gap (`tokens_used` freezes after CLI exit — `docs/BLOCKERS.md`)
 
 ## Architecture
 
