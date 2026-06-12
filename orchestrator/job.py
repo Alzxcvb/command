@@ -16,7 +16,10 @@ if str(_REPO_ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from agents.lifecycle import spawn_agent  # noqa: E402
+from agents.lifecycle import _read_meta as _read_agent_meta  # noqa: E402
+from agents.lifecycle import _write_meta as _write_agent_meta  # noqa: E402
 from agents.registry import get_agent, get_result  # noqa: E402
+from core.estimator import estimate  # noqa: E402
 from orchestrator import observations  # noqa: E402
 from orchestrator.breakdown import Breakdown, parse_breakdown, validate  # noqa: E402
 
@@ -206,6 +209,18 @@ def _dispatch(bd: Breakdown, job_id: str) -> list[str]:
     orch_id = job_meta.get("orchestrator_agent_id")
 
     for s in spawns_sorted:
+        try:
+            r = estimate(s.task)
+        except Exception:
+            r = None
+        # Estimator is a floor only: it raises under-drafted budgets so agents
+        # aren't hard-killed mid-task, but never lowers the orchestrator's draft.
+        if r is not None and r.estimated_tokens > s.budget_tokens:
+            budget_tokens = r.estimated_tokens
+            budget_source = "estimator"
+        else:
+            budget_tokens = s.budget_tokens
+            budget_source = "orchestrator"
         # Wait for a slot
         while sum(1 for a in in_flight if (get_agent(a) or {}).get("status") in ("starting", "running")) >= max_c:
             time.sleep(1.0)
@@ -214,12 +229,16 @@ def _dispatch(bd: Breakdown, job_id: str) -> list[str]:
                 task=s.task,
                 runtime_name=s.runtime,
                 system_prompt="",
-                budget_tokens=s.budget_tokens,
+                budget_tokens=budget_tokens,
                 model=s.model,
                 parent_job_id=job_id,
+                estimated_tokens=r.estimated_tokens if r else 0,
                 metered_cap_usd=s.metered_cap_usd,
             )
-            print(f"  · spawned {aid}  runtime={s.runtime} model={s.model or '—'} budget={s.budget_tokens}")
+            print(f"  · spawned {aid}  runtime={s.runtime} model={s.model or '—'} budget={budget_tokens} ({budget_source})")
+            m = _read_agent_meta(aid)
+            m["budget_source"] = budget_source
+            _write_agent_meta(aid, m)
             observations.log_dispatch(
                 job_id=job_id,
                 agent_id=aid,
@@ -228,7 +247,7 @@ def _dispatch(bd: Breakdown, job_id: str) -> list[str]:
                 runtime=s.runtime,
                 model=s.model,
                 budget_tokens=s.budget_tokens,
-                estimated_tokens=0,
+                estimated_tokens=r.estimated_tokens if r else 0,
                 parent_agent_id=orch_id,
             )
             in_flight.append(aid)
