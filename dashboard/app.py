@@ -27,7 +27,8 @@ from agents.registry import (  # noqa: E402
     get_result,
     list_agents,
 )
-from core.metered_ledger import DEFAULT_DAILY_CAP_USD, get_today_spend  # noqa: E402
+from core.metered_ledger import DEFAULT_DAILY_CAP_USD, get_today_spend, read_turns  # noqa: E402
+from core.turn_router import savings_vs_all_opus  # noqa: E402
 from orchestrator import observations  # noqa: E402
 from orchestrator.job import list_jobs, start_job  # noqa: E402
 from orchestrator.ralph import improve as ralph_improve, pending_failure_count  # noqa: E402
@@ -351,6 +352,20 @@ def _render_analytics() -> None:
         st.bar_chart(tdf.groupby("task_type")["tokens"].sum())
     else:
         st.caption("Tokens per task type appears once jobs dispatch through the estimator.")
+
+    st.divider()
+    st.markdown("**Mid-turn routing** (Phase 3a — static rule table)")
+    turns = read_turns()
+    if not turns:
+        st.caption("No routed turns logged yet — populates once turn routing is wired "
+                   "into a live harness loop (see docs/BLOCKERS.md).")
+    else:
+        s = savings_vs_all_opus(turns)
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Turns downgraded", f"{s['downgraded_pct']:.1f}%", delta=f"{s['turns']} turns")
+        r2.metric("Estimated cost", f"${s['actual_usd']:.4f}")
+        r3.metric("Saved vs all-Opus", f"${s['saved_usd']:.4f}",
+                  delta=f"baseline ${s['all_opus_usd']:.4f}")
 
 
 tab_agents, tab_analytics = st.tabs(["Agents", "Analytics"])
