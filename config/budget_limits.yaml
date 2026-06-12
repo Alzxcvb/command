@@ -1,0 +1,5 @@
+# Budget limits read by orchestrator/job.py.
+# max_concurrent_agents caps simultaneous sub-agent spawns in _dispatch().
+# Keep low: 8GB M3 machine; each agent is a full subprocess.
+
+max_concurrent_agents: 4

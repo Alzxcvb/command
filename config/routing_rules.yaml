@@ -1,0 +1,62 @@
+# Task-type routing rules read by core/estimator.py.
+# Keys per entry: runtime (required), model, estimated_tokens, metered.
+# Task types must match the TaskType enum in router/types.py.
+# Models follow the routing strategy table in CLAUDE.md: cheap models for
+# research/summarization/conversation, sonnet for code/writing/data,
+# opus only for heavy reasoning. claude_code runs on subscription quota,
+# so nothing here is metered.
+
+task_types:
+  code:
+    runtime: claude_code
+    model: sonnet
+    estimated_tokens: 8000
+    metered: false
+
+  writing:
+    runtime: claude_code
+    model: sonnet
+    estimated_tokens: 6000
+    metered: false
+
+  reasoning:
+    runtime: claude_code
+    model: opus
+    estimated_tokens: 10000
+    metered: false
+
+  summarization:
+    runtime: claude_code
+    model: haiku
+    estimated_tokens: 3000
+    metered: false
+
+  conversation:
+    runtime: claude_code
+    model: haiku
+    estimated_tokens: 2000
+    metered: false
+
+  research:
+    runtime: claude_code
+    model: haiku
+    estimated_tokens: 6000
+    metered: false
+
+  translation:
+    runtime: claude_code
+    model: haiku
+    estimated_tokens: 3000
+    metered: false
+
+  data:
+    runtime: claude_code
+    model: sonnet
+    estimated_tokens: 6000
+    metered: false
+
+  default:
+    runtime: claude_code
+    model: sonnet
+    estimated_tokens: 5000
+    metered: false
