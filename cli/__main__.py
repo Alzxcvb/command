@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sys
 import time
 from pathlib import Path
@@ -85,10 +86,27 @@ def cmd_spawn(args) -> int:
     print(f"[spawned] {agent_id}  → state/agents/{agent_id}/")
 
     if args.detach:
-        print("[detached] monitor thread will keep updating state until subprocess exits or this process is killed.")
+        if _handoff_to_commandd(agent_id):
+            print(f"[detached] handed off to commandd — watchdog tracks {agent_id} after this process exits.")
+        else:
+            print("Warning: no commandd running — budget enforcement dies with this process. Start it with: python commandd.py &")
         return 0
 
     return _wait_loop(agent_id)
+
+
+def _handoff_to_commandd(agent_id: str) -> bool:
+    """Hand a detached agent to the commandd watchdog. True if the daemon accepted."""
+    sock_path = _REPO_ROOT / "state" / "commandd.sock"
+    if not sock_path.exists():
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.connect(str(sock_path))
+            s.sendall(f"HANDOFF:{agent_id}\n".encode("utf-8"))
+        return True
+    except OSError:
+        return False
 
 
 def cmd_status(args) -> int:
