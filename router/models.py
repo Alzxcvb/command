@@ -87,6 +87,27 @@ MODELS: dict[str, ModelInfo] = {
         max_context=200_000,
         supports_images=True,
     ),
+    # Codex Mini — OpenAI coding model; used as a non-Claude judge in the prompt pipeline.
+    # Verify slug and pricing at openrouter.ai/models before changing.
+    "openai/codex-mini-latest": ModelInfo(
+        id="openai/codex-mini-latest",
+        name="Codex Mini",
+        provider="openai",
+        scores={
+            TaskType.CODE: 9.0,
+            TaskType.WRITING: 6.5,
+            TaskType.REASONING: 8.5,
+            TaskType.SUMMARIZATION: 7.0,
+            TaskType.CONVERSATION: 6.0,
+            TaskType.RESEARCH: 7.5,
+            TaskType.TRANSLATION: 6.5,
+            TaskType.DATA: 8.0,
+        },
+        cost_per_million_input=1.5,    # verify at openrouter.ai/models
+        cost_per_million_output=6.0,
+        max_context=128_000,
+        supports_images=False,
+    ),
     "openai/gpt-4o": ModelInfo(
         id="openai/gpt-4o",
         name="GPT-4o",

@@ -34,27 +34,42 @@ MEMORY_QUEUE_PATH = CURATOR_DIR / "memory_queue.jsonl"
 CURATOR_MODEL = "anthropic/claude-haiku-4-5"
 MAX_OBSERVATIONS = 10
 
-CURATOR_SYSTEM_PROMPT = """\
+_RUBRIC_PATH = _REPO_ROOT / "orchestrator" / "prompts" / "judge_rubric.md"
+
+
+def _load_rubric() -> str:
+    try:
+        return _RUBRIC_PATH.read_text().strip()
+    except Exception:
+        return ""
+
+
+_JUDGE_RUBRIC = _load_rubric()
+
+CURATOR_SYSTEM_PROMPT = f"""\
 You are a post-job memory curator for an agent orchestration platform.
 
 You will receive a summary of a completed job: its goal, final status, child agent
 outcomes, and a sample of observations (dispatches, completions, retries).
 
+Evaluate the job against these criteria:
+{_JUDGE_RUBRIC}
+
 Answer three questions and return ONLY raw JSON with no markdown fences, no preamble,
 and no trailing text. The JSON must match this exact shape:
 
-{
+{{
   "answered_goal": true,
   "drift_summary": "...",
   "recurring_issues": ["..."],
   "memory_updates": [
-    {"file": "project-command.md", "note": "..."}
+    {{"file": "project-command.md", "note": "..."}}
   ]
-}
+}}
 
 Field rules:
-- answered_goal: true if the job output clearly addressed the stated goal, false otherwise.
-- drift_summary: a short sentence describing how the job strayed from the goal, or an
+- answered_goal: true if the job output clearly addressed the stated goal per the criteria above.
+- drift_summary: a short sentence describing how the job strayed (criteria 1, 2, or 7), or an
   empty string if there was no meaningful drift.
 - recurring_issues: a list of short phrases naming patterns that caused problems across
   multiple agents in this job (e.g. "budget overrun on code tasks", "retry loop on tool call").

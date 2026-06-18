@@ -64,8 +64,14 @@ with top_right:
     auto = st.checkbox("Auto-refresh (2s)", value=True)
 
 
-def _start_job_async(goal: str, total_budget: int, total_metered_cap: float,
-                     orch_model: str, project_hint: str = "") -> None:
+def _start_job_async(
+    goal: str,
+    total_budget: int,
+    total_metered_cap: float,
+    orch_model: str,
+    project_hint: str = "",
+    use_pipeline: bool = False,
+) -> None:
     """Run start_job in a thread so the Streamlit request returns immediately."""
     t = threading.Thread(
         target=start_job,
@@ -75,6 +81,7 @@ def _start_job_async(goal: str, total_budget: int, total_metered_cap: float,
             "total_metered_cap_usd": total_metered_cap,
             "orchestrator_model": orch_model,
             "project_hint": project_hint,
+            "use_prompt_pipeline": use_pipeline,
         },
         daemon=True,
         name="job-starter",
@@ -117,10 +124,16 @@ with st.sidebar:
         total_cap = col_b.number_input("Metered cap $", min_value=0.0, max_value=10.0,
                                        value=0.50, step=0.10)
         orch_model = st.selectbox("Orchestrator model", ["sonnet", "opus", "haiku"], index=0)
+        use_pipeline = st.checkbox(
+            "Run prompt pipeline (Architect + Codex/DeepSeek council)",
+            value=False,
+        )
         if st.form_submit_button("Orchestrate", use_container_width=True) and goal.strip():
             try:
-                _start_job_async(goal.strip(), int(total_budget), float(total_cap), orch_model,
-                                 project_hint.strip())
+                _start_job_async(
+                    goal.strip(), int(total_budget), float(total_cap), orch_model,
+                    project_hint.strip(), use_pipeline=use_pipeline,
+                )
                 st.success("Job started — orchestrator spinning up.")
             except Exception as e:
                 st.error(f"Failed to orchestrate: {e}")
@@ -368,11 +381,153 @@ def _render_analytics() -> None:
                   delta=f"baseline ${s['all_opus_usd']:.4f}")
 
 
-tab_agents, tab_analytics = st.tabs(["Agents", "Analytics"])
+def _render_pipeline_tab() -> None:
+    """Show prompt pipeline results for recent jobs."""
+    st.markdown("### Prompt Pipeline — recent jobs")
+    st.caption(
+        "Runs when **--pipeline** is passed to `orchestrate`. "
+        "Architect (Haiku) optimizes the goal; Codex + DeepSeek R1 review it."
+    )
+
+    jobs_root = _REPO_ROOT / "state" / "jobs"
+    pipeline_files: list[tuple[str, dict]] = []
+    if jobs_root.exists():
+        for job_dir in sorted(jobs_root.iterdir(), reverse=True):
+            pf = job_dir / "prompt_pipeline.json"
+            if pf.exists():
+                try:
+                    data = json.loads(pf.read_text())
+                    pipeline_files.append((job_dir.name, data))
+                except Exception:
+                    pass
+
+    if not pipeline_files:
+        st.info("No pipeline results yet. Run: `python -m cli orchestrate --pipeline \"your goal\"`")
+        return
+
+    for job_id, p in pipeline_files[:10]:
+        score = p.get("quality_score", 0)
+        approved = p.get("approved", False)
+        color = "green" if approved else "orange"
+        badge = "approved" if approved else "pending"
+        with st.expander(
+            f"`{job_id}` · score {score}/10 · :{color}[{badge}]",
+            expanded=(job_id == pipeline_files[0][0]),
+        ):
+            col_l, col_r = st.columns(2)
+            col_l.markdown("**Original ask**")
+            col_l.code(p.get("original_goal", ""), language="text")
+            col_r.markdown("**Optimized prompt**")
+            col_r.code(p.get("optimized_prompt", ""), language="text")
+
+            if p.get("rationale"):
+                st.caption(f"Architect rationale: {p['rationale']}")
+
+            drift = p.get("drift_flags") or []
+            if drift:
+                st.warning(f"Drift flags: {', '.join(drift)}")
+
+            verdicts = p.get("council_verdicts") or []
+            if verdicts:
+                st.markdown("**Council verdicts**")
+                vcols = st.columns(len(verdicts))
+                for i, v in enumerate(verdicts):
+                    with vcols[i]:
+                        model = v.get("model", f"Judge {i+1}")
+                        ok = v.get("approved", False)
+                        qs = v.get("quality_score", 0)
+                        st.markdown(f"**{model.split('/')[-1]}**")
+                        st.markdown(f"{'✓ approved' if ok else '✗ rejected'}  ·  score {qs}")
+                        vflags = v.get("drift_flags") or []
+                        if vflags:
+                            st.caption(f"Flags: {', '.join(vflags)}")
+
+            pre = p.get("pre_review")
+            if pre:
+                st.markdown("**Pre-execution review**")
+                if pre.get("proceed"):
+                    st.success("Decomposition passed")
+                else:
+                    st.error(f"Concerns: {pre.get('concerns', [])}")
+                if pre.get("recommendation"):
+                    st.caption(pre["recommendation"])
+
+
+def _render_memory_queue_tab() -> None:
+    """Show curator memory suggestions pending human approval."""
+    st.markdown("### Memory Queue — curator suggestions")
+    st.caption(
+        "After each job the curator (Haiku) proposes notes to save. "
+        "Approve to apply; Skip to dismiss."
+    )
+
+    queue_path = _REPO_ROOT / "state" / "curator" / "memory_queue.jsonl"
+    if not queue_path.exists():
+        st.info("Memory queue is empty — it fills after orchestrated jobs complete.")
+        return
+
+    raw_entries: list[dict] = []
+    for ln in queue_path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            raw_entries.append(json.loads(ln))
+        except Exception:
+            pass
+
+    # Last status wins per (job_id, note) pair
+    status_map: dict[tuple, str] = {}
+    for e in raw_entries:
+        key = (e.get("job_id", ""), e.get("note", ""))
+        status_map[key] = e.get("status", "pending")
+
+    pending = [
+        e for e in raw_entries
+        if status_map.get((e.get("job_id", ""), e.get("note", ""))) == "pending"
+        and e.get("status") == "pending"
+    ]
+
+    if not pending:
+        st.success("All suggestions have been reviewed.")
+        return
+
+    st.markdown(f"**{len(pending)} pending suggestion(s)**")
+
+    def _update_status(entry: dict, new_status: str) -> None:
+        updated = dict(entry)
+        updated["status"] = new_status
+        with queue_path.open("a") as f:
+            f.write(json.dumps(updated) + "\n")
+
+    for e in pending:
+        with st.container(border=True):
+            cols = st.columns([4, 1, 1])
+            cols[0].markdown(f"**{e.get('file', '?')}** · `{e.get('job_id', '?')[:14]}`")
+            cols[0].markdown(e.get("note", ""))
+            cols[0].caption(f"suggested {(e.get('ts') or '')[:19].replace('T', ' ')}")
+            key_base = f"{e.get('job_id', '')}_{hash(e.get('note', ''))}"
+            if cols[1].button("Approve", key=f"approve-{key_base}", use_container_width=True):
+                _update_status(e, "approved")
+                st.success(f"Approved — copy this note into `{e.get('file')}`:")
+                st.code(e.get("note", ""), language="text")
+                st.rerun()
+            if cols[2].button("Skip", key=f"skip-{key_base}", use_container_width=True):
+                _update_status(e, "skipped")
+                st.rerun()
+
+
+tab_agents, tab_analytics, tab_pipeline, tab_memory = st.tabs(
+    ["Agents", "Analytics", "Pipeline", "Memory Queue"]
+)
 with tab_agents:
     _render_agents_tab()
 with tab_analytics:
     _render_analytics()
+with tab_pipeline:
+    _render_pipeline_tab()
+with tab_memory:
+    _render_memory_queue_tab()
 
 if auto:
     time.sleep(2)

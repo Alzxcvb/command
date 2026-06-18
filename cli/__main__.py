@@ -184,6 +184,8 @@ def cmd_orchestrate(args) -> int:
         orchestrator_budget=args.orchestrator_budget,
         dry_run=args.dry_run,
         project_hint=args.project or "",
+        model_pin=args.model_pin or "",
+        use_prompt_pipeline=args.pipeline,
     )
     print(f"\n[job] {job_id}  → state/jobs/{job_id}/")
     return 0
@@ -304,6 +306,10 @@ def main() -> int:
     s.add_argument("--orchestrator-model", default="sonnet", dest="orchestrator_model")
     s.add_argument("--orchestrator-budget", type=int, default=8000, dest="orchestrator_budget")
     s.add_argument("--dry-run", action="store_true", help="parse breakdown but don't dispatch sub-agents")
+    s.add_argument("--model-pin", default=None, dest="model_pin",
+                   help="pin all child agents to this model (e.g. haiku, sonnet, opus)")
+    s.add_argument("--pipeline", action="store_true",
+                   help="run Architect/Council prompt pipeline on goal before orchestrating")
     s.set_defaults(func=cmd_orchestrate)
 
     s = sub.add_parser("jobs", help="List jobs or show one job's details")

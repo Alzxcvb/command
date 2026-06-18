@@ -188,6 +188,27 @@ def start_job(
         print(f"[job {job_id}] dry-run: parsed {len(bd.spawns)} spawn(s); not dispatched.")
         return job_id
 
+    # Phase 8: pre-execution decomposition review (soft gate — logs concerns, never blocks)
+    try:
+        from orchestrator.pre_execution_review import run_pre_execution_review
+        pre_review = run_pre_execution_review(effective_goal, output)
+        _update_meta(
+            job_id,
+            pre_review={
+                "proceed": pre_review.proceed,
+                "concerns": pre_review.concerns,
+                "recommendation": pre_review.recommendation,
+            },
+        )
+        if not pre_review.proceed:
+            print(
+                f"[job {job_id}] pre-execution review flagged concerns: {pre_review.concerns}"
+            )
+        else:
+            print(f"[job {job_id}] pre-execution review passed")
+    except Exception as e:
+        print(f"[job {job_id}] pre-execution review skipped: {e!r}")
+
     print(f"[job {job_id}] dispatching {len(bd.spawns)} sub-agent(s) (max concurrent {_max_concurrent()})")
     child_ids = _dispatch(bd, job_id)
     _update_meta(job_id, status="running", child_agent_ids=child_ids, spawn_count=len(child_ids))
