@@ -60,3 +60,10 @@ task_types:
     model: sonnet
     estimated_tokens: 5000
     metered: false
+
+# Per-job model pin. When model_pin is passed to start_job(), it overrides
+# the routing decision for any spawn that has no explicit model in its tag.
+# Spawns with an explicit model="..." attribute always keep their own model.
+model_overrides:
+  allow_per_job_pin: true
+  fallback_if_pin_unavailable: true

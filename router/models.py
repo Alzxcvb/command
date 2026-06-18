@@ -6,25 +6,84 @@ from .types import ModelInfo, TaskType
 
 # Model registry with scores based on published benchmarks + community consensus.
 # Scores are 0-10 where 10 = best-in-class for that task type.
-# Costs are USD per 1M tokens (as of early 2026 via OpenRouter).
+# Costs are USD per 1M tokens (as of June 2026 via OpenRouter).
+# Verify exact slugs and pricing at openrouter.ai/models before changing providers.
 
 MODELS: dict[str, ModelInfo] = {
-    "anthropic/claude-sonnet-4-5": ModelInfo(
-        id="anthropic/claude-sonnet-4-5",
-        name="Claude Sonnet 4.5",
+    # --- Anthropic (current Claude 4.x / Fable 5 family) ---
+    "anthropic/claude-fable-5": ModelInfo(
+        id="anthropic/claude-fable-5",
+        name="Claude Fable 5",
+        provider="anthropic",
+        scores={
+            TaskType.CODE: 9.5,
+            TaskType.WRITING: 10.0,
+            TaskType.REASONING: 10.0,
+            TaskType.SUMMARIZATION: 10.0,
+            TaskType.CONVERSATION: 10.0,
+            TaskType.RESEARCH: 10.0,
+            TaskType.TRANSLATION: 9.0,
+            TaskType.DATA: 9.5,
+        },
+        cost_per_million_input=15.0,   # verify at openrouter.ai/models
+        cost_per_million_output=75.0,
+        max_context=200_000,
+        supports_images=True,
+    ),
+    "anthropic/claude-opus-4-8": ModelInfo(
+        id="anthropic/claude-opus-4-8",
+        name="Claude Opus 4.8",
+        provider="anthropic",
+        scores={
+            TaskType.CODE: 9.5,
+            TaskType.WRITING: 9.5,
+            TaskType.REASONING: 10.0,
+            TaskType.SUMMARIZATION: 9.5,
+            TaskType.CONVERSATION: 9.5,
+            TaskType.RESEARCH: 9.5,
+            TaskType.TRANSLATION: 9.0,
+            TaskType.DATA: 9.5,
+        },
+        cost_per_million_input=15.0,   # verify at openrouter.ai/models
+        cost_per_million_output=75.0,
+        max_context=200_000,
+        supports_images=True,
+    ),
+    "anthropic/claude-sonnet-4-6": ModelInfo(
+        id="anthropic/claude-sonnet-4-6",
+        name="Claude Sonnet 4.6",
         provider="anthropic",
         scores={
             TaskType.CODE: 9.0,
-            TaskType.WRITING: 10.0,
+            TaskType.WRITING: 9.5,
             TaskType.REASONING: 9.0,
             TaskType.SUMMARIZATION: 9.0,
             TaskType.CONVERSATION: 9.0,
             TaskType.RESEARCH: 9.0,
-            TaskType.TRANSLATION: 8.0,
+            TaskType.TRANSLATION: 8.5,
             TaskType.DATA: 8.5,
         },
         cost_per_million_input=3.0,
         cost_per_million_output=15.0,
+        max_context=200_000,
+        supports_images=True,
+    ),
+    "anthropic/claude-haiku-4-5": ModelInfo(
+        id="anthropic/claude-haiku-4-5",
+        name="Claude Haiku 4.5",
+        provider="anthropic",
+        scores={
+            TaskType.CODE: 7.5,
+            TaskType.WRITING: 7.5,
+            TaskType.REASONING: 7.5,
+            TaskType.SUMMARIZATION: 8.0,
+            TaskType.CONVERSATION: 8.0,
+            TaskType.RESEARCH: 7.5,
+            TaskType.TRANSLATION: 7.5,
+            TaskType.DATA: 7.5,
+        },
+        cost_per_million_input=0.80,
+        cost_per_million_output=4.0,
         max_context=200_000,
         supports_images=True,
     ),
@@ -120,6 +179,46 @@ MODELS: dict[str, ModelInfo] = {
         },
         cost_per_million_input=0.35,
         cost_per_million_output=0.40,
+        max_context=128_000,
+        supports_images=False,
+    ),
+    # Kimi K2 — strong coder at very low cost; verify slug at openrouter.ai/models
+    "moonshotai/kimi-k2": ModelInfo(
+        id="moonshotai/kimi-k2",
+        name="Kimi K2",
+        provider="moonshot",
+        scores={
+            TaskType.CODE: 9.0,
+            TaskType.WRITING: 7.5,
+            TaskType.REASONING: 8.5,
+            TaskType.SUMMARIZATION: 7.5,
+            TaskType.CONVERSATION: 7.5,
+            TaskType.RESEARCH: 7.5,
+            TaskType.TRANSLATION: 7.5,
+            TaskType.DATA: 8.5,
+        },
+        cost_per_million_input=0.15,   # verify at openrouter.ai/models
+        cost_per_million_output=2.50,
+        max_context=128_000,
+        supports_images=False,
+    ),
+    # DeepSeek R1 — strong reasoning at very low cost
+    "deepseek/deepseek-r1": ModelInfo(
+        id="deepseek/deepseek-r1",
+        name="DeepSeek R1",
+        provider="deepseek",
+        scores={
+            TaskType.CODE: 9.0,
+            TaskType.WRITING: 7.0,
+            TaskType.REASONING: 9.5,
+            TaskType.SUMMARIZATION: 7.5,
+            TaskType.CONVERSATION: 7.0,
+            TaskType.RESEARCH: 8.5,
+            TaskType.TRANSLATION: 7.0,
+            TaskType.DATA: 9.0,
+        },
+        cost_per_million_input=0.55,   # verify at openrouter.ai/models
+        cost_per_million_output=2.19,
         max_context=128_000,
         supports_images=False,
     ),

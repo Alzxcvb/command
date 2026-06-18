@@ -32,8 +32,6 @@ class TestBenchmarkRunner:
     def test_get_models_for_task(self):
         models = get_models_for_task("code")
         assert len(models) > 0
-        # All models in registry should be returned
-        assert len(models) == 6
 
     def test_get_models_top_n(self):
         models = get_models_for_task("writing", top_n=2)

@@ -71,8 +71,8 @@ class TestClassifier:
 class TestModelSelection:
     def test_best_budget_returns_highest_score(self):
         model = get_best_model_for_task(TaskType.WRITING, budget="best")
-        # Claude Sonnet 4.5 has writing score of 10
-        assert model.id == "anthropic/claude-sonnet-4-5"
+        # Best writing model should score 10
+        assert model.scores.get(TaskType.WRITING.value, 0) == 10.0
 
     def test_cheap_budget_returns_affordable_model(self):
         model = get_best_model_for_task(TaskType.CODE, budget="cheap")

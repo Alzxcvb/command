@@ -89,20 +89,50 @@ def start_job(
     orchestrator_budget: int = 8000,
     dry_run: bool = False,
     project_hint: str = "",
+    model_pin: str = "",
+    use_prompt_pipeline: bool = False,
 ) -> str:
     """Spawn orchestrator → parse breakdown → fan out sub-agents → return job_id.
 
     Blocks until all sub-agents complete (or fail). Use dry_run=True to stop after parsing.
     project_hint groups jobs in historical analytics (e.g. "polycrisis", "mdac").
+    model_pin overrides routing for any spawn with no explicit model in its breakdown tag.
+    use_prompt_pipeline runs the 3-stage Architect/Reviewer/Gate pipeline on the goal first.
     """
     job_id = f"job_{uuid.uuid4().hex[:10]}"
     job_dir = _job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
+    # Optional: refine goal through the prompt pipeline before orchestrating
+    pipeline_result = None
+    effective_goal = goal
+    if use_prompt_pipeline:
+        try:
+            from orchestrator.prompt_pipeline import run_prompt_pipeline
+            pipeline_result = run_prompt_pipeline(goal)
+            if pipeline_result.approved:
+                effective_goal = pipeline_result.optimized_prompt
+            (job_dir / "prompt_pipeline.json").write_text(
+                json.dumps({
+                    "original_goal": goal,
+                    "optimized_prompt": pipeline_result.optimized_prompt,
+                    "quality_score": pipeline_result.quality_score,
+                    "drift_flags": pipeline_result.drift_flags,
+                    "approved": pipeline_result.approved,
+                    "rationale": pipeline_result.architect_rationale,
+                }, indent=2)
+            )
+            print(f"[job {job_id}] prompt pipeline: score={pipeline_result.quality_score} approved={pipeline_result.approved}")
+        except Exception as e:
+            print(f"[job {job_id}] prompt pipeline skipped: {e!r}")
+
     meta = {
         "job_id": job_id,
         "goal": goal,
+        "effective_goal": effective_goal,
         "project_hint": project_hint,
+        "model_pin": model_pin,
+        "use_prompt_pipeline": use_prompt_pipeline,
         "status": "orchestrating",
         "total_budget_tokens": total_budget_tokens,
         "total_metered_cap_usd": total_metered_cap_usd,
@@ -114,7 +144,7 @@ def start_job(
     _write_meta(job_id, meta)
 
     system_prompt = PROMPT_PATH.read_text()
-    user_prompt = _build_orchestrator_prompt(goal, total_budget_tokens, total_metered_cap_usd)
+    user_prompt = _build_orchestrator_prompt(effective_goal, total_budget_tokens, total_metered_cap_usd)
 
     orch_id = spawn_agent(
         task=user_prompt,
@@ -173,6 +203,7 @@ def start_job(
     print(f"[job {job_id}] done. summary: {summary}")
     _append_analytics(job_id, project_hint, summary)
     _maybe_auto_improve(job_id)
+    _maybe_run_curator(job_id)
     return job_id
 
 
@@ -191,6 +222,20 @@ def _append_analytics(job_id: str, project_hint: str, summary: dict) -> None:
             f.write(json.dumps(line) + "\n")
     except Exception as e:
         print(f"[analytics error] {e!r}")
+
+
+def _maybe_run_curator(job_id: str) -> None:
+    """Run the memory curator in a background thread after every job completes."""
+    import threading
+
+    def _run():
+        try:
+            from orchestrator.curator import run_curator
+            run_curator(job_id)
+        except Exception as e:
+            print(f"[curator error] {e!r}")
+
+    threading.Thread(target=_run, daemon=True, name=f"curator-{job_id}").start()
 
 
 def _maybe_auto_improve(job_id: str) -> None:
@@ -228,6 +273,7 @@ def _dispatch(bd: Breakdown, job_id: str) -> list[str]:
     job_meta = _read_meta(job_id)
     goal = job_meta.get("goal", "")
     orch_id = job_meta.get("orchestrator_agent_id")
+    model_pin = job_meta.get("model_pin", "")
 
     for s in spawns_sorted:
         try:
@@ -246,12 +292,14 @@ def _dispatch(bd: Breakdown, job_id: str) -> list[str]:
         while sum(1 for a in in_flight if (get_agent(a) or {}).get("status") in ("starting", "running")) >= max_c:
             time.sleep(1.0)
         try:
+            # model_pin overrides routing only when the breakdown has no explicit model
+            effective_model = s.model or model_pin or None
             aid = spawn_agent(
                 task=s.task,
                 runtime_name=s.runtime,
                 system_prompt="",
                 budget_tokens=budget_tokens,
-                model=s.model,
+                model=effective_model,
                 parent_job_id=job_id,
                 estimated_tokens=r.estimated_tokens if r else 0,
                 metered_cap_usd=s.metered_cap_usd,
