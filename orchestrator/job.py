@@ -28,6 +28,86 @@ JOBS_DIR = STATE_ROOT / "jobs"
 PROMPT_PATH = _REPO_ROOT / "orchestrator" / "prompts" / "orchestrator.md"
 BUDGET_LIMITS_PATH = _REPO_ROOT / "config" / "budget_limits.yaml"
 
+_PLANNING_JUDGE_MODEL = "anthropic/claude-sonnet-4-6"
+
+_PLANNING_JUDGE_SYSTEM = (
+    "You are reviewing an AI agent spawn plan before execution. "
+    "The original task is shown, along with the proposed sub-tasks.\n"
+    "Evaluate:\n"
+    "1. Coverage: does the plan address all parts of the original task?\n"
+    "2. Decomposition: are sub-tasks independent enough to run in parallel, "
+    "or do hidden dependencies exist?\n"
+    "3. Budget realism: do the estimated token budgets match the complexity "
+    "of each sub-task?\n"
+    "4. Completeness: will the combined outputs, if successful, actually "
+    "fulfill the original task?\n"
+    'Return JSON only (no markdown fences): {"approved": bool, '
+    '"flags": [list of issue strings], "confidence": 0.0-1.0}'
+)
+
+
+def _strip_judge_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        start, end = 1, len(lines)
+        for i in range(len(lines) - 1, 0, -1):
+            if lines[i].strip() == "```":
+                end = i
+                break
+        text = "\n".join(lines[start:end]).strip()
+    return text
+
+
+def judge_spawn_plan(
+    original_task: str,
+    spawn_plan: list,
+    estimated_budgets: dict,
+) -> dict:
+    """Evaluate a spawn plan before agents fire. Returns approved/flags/confidence.
+
+    Defaults to approved=True on any error so the job is never hard-blocked.
+    """
+    _default: dict = {"approved": True, "flags": [], "confidence": 0.0}
+    try:
+        from router.providers import OpenRouterProvider
+        provider = OpenRouterProvider()
+    except Exception:
+        return _default
+
+    spawns_text = ""
+    for i, s in enumerate(spawn_plan, 1):
+        task_str = getattr(s, "task", "")
+        est = estimated_budgets.get(task_str)
+        est_str = f", estimated={est}" if est is not None else ""
+        spawns_text += (
+            f"{i}. runtime={getattr(s, 'runtime', '?')} "
+            f"budget={getattr(s, 'budget_tokens', '?')}{est_str}\n"
+            f"   task: {task_str[:300]}\n"
+        )
+
+    prompt = (
+        f"## Original task\n{original_task[:1000]}\n\n"
+        f"## Proposed spawn plan ({len(spawn_plan)} sub-agents)\n{spawns_text}"
+    )
+
+    try:
+        raw, _ = provider.call_raw(
+            _PLANNING_JUDGE_MODEL,
+            prompt,
+            system_prompt=_PLANNING_JUDGE_SYSTEM,
+            max_tokens=512,
+        )
+        cleaned = _strip_judge_fences(raw)
+        result = json.loads(cleaned)
+        return {
+            "approved": bool(result.get("approved", True)),
+            "flags": list(result.get("flags", [])),
+            "confidence": float(result.get("confidence", 0.0)),
+        }
+    except Exception:
+        return _default
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -209,11 +289,34 @@ def start_job(
     except Exception as e:
         print(f"[job {job_id}] pre-execution review skipped: {e!r}")
 
+    # Planning judge gate: lightweight plan quality check before agents fire (soft gate — logs, never blocks)
+    try:
+        judge_result = judge_spawn_plan(effective_goal, bd.spawns, {})
+        _update_meta(job_id, planning_judge=judge_result)
+        if not judge_result.get("approved", True):
+            flags = judge_result.get("flags", [])
+            print(f"[job {job_id}] planning judge flagged: {flags}")
+            rejections_dir = STATE_ROOT / "planning"
+            rejections_dir.mkdir(parents=True, exist_ok=True)
+            rejection_entry = {
+                "ts": _now_iso(),
+                "job_id": job_id,
+                "task_summary": effective_goal[:200],
+                "flags": flags,
+                "confidence": judge_result.get("confidence", 0.0),
+            }
+            with (rejections_dir / "rejections.jsonl").open("a") as f:
+                f.write(json.dumps(rejection_entry) + "\n")
+        else:
+            print(f"[job {job_id}] planning judge approved (confidence={judge_result.get('confidence', 0.0):.2f})")
+    except Exception as e:
+        print(f"[job {job_id}] planning judge skipped: {e!r}")
+
     print(f"[job {job_id}] dispatching {len(bd.spawns)} sub-agent(s) (max concurrent {_max_concurrent()})")
     child_ids = _dispatch(bd, job_id)
     _update_meta(job_id, status="running", child_agent_ids=child_ids, spawn_count=len(child_ids))
 
-    final = _wait_for_children(child_ids, job_id=job_id)
+    final = _wait_for_children(child_ids, job_id=job_id, original_task=effective_goal)
     summary = _summarize(final)
     _update_meta(
         job_id,
@@ -349,13 +452,17 @@ def _dispatch(bd: Breakdown, job_id: str) -> list[str]:
     return all_ids
 
 
-def _wait_for_children(child_ids: list[str], job_id: str = "") -> list[dict]:
+def _wait_for_children(child_ids: list[str], job_id: str = "", original_task: str = "") -> list[dict]:
+    from orchestrator.watchdog import WatchdogAgent
+    watchdog = WatchdogAgent()
+
     final: list[dict] = []
     for aid in child_ids:
         meta = _wait_for_agent(aid)
+        result = get_result(aid) or {}
+        meta_with_output = {**meta, "final_text": result.get("final_text", "")}
         final.append(meta)
         print(f"  ← {aid} → {meta.get('status')}  tokens={meta.get('tokens_used', 0)}")
-        result = get_result(aid) or {}
         observations.log_outcome(
             job_id=job_id,
             agent_id=aid,
@@ -365,6 +472,11 @@ def _wait_for_children(child_ids: list[str], job_id: str = "") -> list[dict]:
             budget_overrun=bool(meta.get("budget_overrun", False)),
             final_text=result.get("final_text", "") or "",
         )
+        if original_task:
+            try:
+                watchdog.check_alignment(job_id, original_task, [m for m in final] + [meta_with_output])
+            except Exception as e:
+                print(f"  [watchdog error] {e!r}")
     return final
 
 
