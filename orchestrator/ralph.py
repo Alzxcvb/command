@@ -6,20 +6,28 @@ The flow:
        - the current orchestrator.md
        - the failure buffer (drafted tasks + outcomes + fail_reasons)
        - instructions to return a revised orchestrator.md between markers
-    3. Extract the revised guide, overwrite orchestrator.md.
-    4. Commit the change (so the guide_sha actually moves forward).
-    5. Record last_improvement.json.
+    3. Extract the revised guide, run the 2-model judge council.
+    4. If both judges approve, overwrite orchestrator.md and git-commit.
+    5. If the council rejects, log the rejection and return without committing.
+    6. Record last_improvement.json.
 
 Why the overwrite format (not a unified diff): we want the improver to have
 full rewrite authority on a small file. Diffs introduce a parsing step that
 fails noisily; overwriting a ~2KB file is cheap and robust.
+
+Judge council: one model judging its own kind of work has self-enhancement bias.
+A 2-model council (Haiku 4.5 fast-cheap + Opus 4.8 authoritative) must both
+approve before any guide change is committed. Rejections are logged to
+state/ralph/council_rejections.jsonl for review.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -33,12 +41,29 @@ from orchestrator import observations  # noqa: E402
 
 GUIDE_PATH = observations.GUIDE_PATH
 CHANGELOG_PATH = _REPO_ROOT / "state" / "ralph" / "changelog.md"
+COUNCIL_REJECTIONS_PATH = _REPO_ROOT / "state" / "ralph" / "council_rejections.jsonl"
 
 MIN_SAMPLES_TO_TRIGGER = 3
 DEFAULT_RALPH_BUDGET = 15000
 
 REVISED_START = "<<<REVISED_ORCHESTRATOR_MD>>>"
 REVISED_END = "<<<END_REVISED_ORCHESTRATOR_MD>>>"
+
+# Judge models: Haiku 4.5 (fast, cheap) + Opus 4.8 (authoritative).
+# Both must approve before any guide revision is committed.
+HAIKU_JUDGE_MODEL = "anthropic/claude-haiku-4-5"
+OPUS_JUDGE_MODEL = "anthropic/claude-opus-4-8"
+
+JUDGE_RUBRIC = (
+    "You are reviewing a proposed change to an AI orchestrator guide.\n"
+    "Score each criterion 1-5:\n"
+    "1. Does the proposed change address the failure patterns shown?\n"
+    "2. Does it preserve the core orchestration intent of the original?\n"
+    "3. Does it avoid introducing ambiguous or over-broad instructions?\n"
+    "4. Is it likely to reduce over-budget or failed agent runs?\n"
+    "Verdict: APPROVE if all criteria >= 3, otherwise REJECT. "
+    "State the weakest criterion."
+)
 
 
 def _sample_card(sample: dict) -> str:
@@ -49,7 +74,7 @@ def _sample_card(sample: dict) -> str:
     fail_reasons = ", ".join(sample.get("fail_reasons", []))
     lines = [
         f"### Sample {sample['agent_id']}",
-        f"- runtime: {disp.get('runtime')} / {disp.get('model') or '—'}",
+        f"- runtime: {disp.get('runtime')} / {disp.get('model') or chr(8212)}",
         f"- budget_tokens: {disp.get('budget_tokens')}  (used: {out.get('tokens_used', 0)})",
         f"- fail_reasons: {fail_reasons}",
         "",
@@ -87,6 +112,157 @@ def build_improver_prompt(samples: list[dict], current_guide: str) -> str:
         "If no change is warranted, still output the markers with the file unchanged, "
         "and say so in the summary.\n"
     )
+
+
+def _build_judge_prompt(
+    original_guide: str, proposed_guide: str, failure_samples: list[dict]
+) -> str:
+    """Build the judge prompt with rubric, both guide versions, and failure context."""
+    sample_md = "\n\n".join(_sample_card(s) for s in failure_samples[:10])
+    return (
+        f"{JUDGE_RUBRIC}\n\n"
+        "## Original orchestrator.md\n"
+        f"```markdown\n{original_guide}\n```\n\n"
+        "## Proposed revised orchestrator.md\n"
+        f"```markdown\n{proposed_guide}\n```\n\n"
+        "## Failure samples that motivated this change\n"
+        f"{sample_md}\n"
+    )
+
+
+def _call_judge(model_id: str, prompt: str) -> str:
+    """Call a judge model via the project router, falling back to direct Anthropic or OpenRouter.
+
+    Dispatch chain (mirrors the project's routing philosophy):
+      1. Router dispatch: respects COMMAND_PROVIDER env override, then model's native
+         provider (Anthropic direct if keyed), then OpenRouter fallback.
+      2. If the router chain raises ValueError (no keys at all), try direct Anthropic.
+      3. If that also fails, try OpenRouter directly.
+      4. If all three fail, raise a clear RuntimeError — never silently skip the council.
+    """
+    from router.models import get_model
+    from router.providers import AnthropicProvider, OpenRouterProvider, get_provider_for
+
+    errors: list[str] = []
+
+    # 1. Try via the project router (COMMAND_PROVIDER -> native provider -> OpenRouter)
+    model = get_model(model_id)
+    if model is not None:
+        try:
+            provider = get_provider_for(model)
+            content, _ = provider.call_raw(model_id, prompt, max_tokens=1024)
+            return content
+        except ValueError as exc:
+            errors.append(f"router: {exc}")
+
+    # 2. Direct Anthropic fallback (covers model not in registry, or router had no keys)
+    try:
+        provider = AnthropicProvider()
+        content, _ = provider.call_raw(model_id, prompt, max_tokens=1024)
+        return content
+    except ValueError as exc:
+        errors.append(f"direct_anthropic: {exc}")
+
+    # 3. OpenRouter final fallback
+    try:
+        provider = OpenRouterProvider()
+        content, _ = provider.call_raw(model_id, prompt, max_tokens=1024)
+        return content
+    except ValueError as exc:
+        errors.append(f"openrouter: {exc}")
+        raise RuntimeError(
+            f"No API key available to call judge model {model_id!r}. "
+            f"Tried: {'; '.join(errors)}. "
+            "Set ANTHROPIC_API_KEY or OPENROUTER_API_KEY."
+        )
+
+
+def _parse_verdict(text: str) -> tuple[str, str]:
+    """Return (verdict, reason) where verdict is 'APPROVE' or 'REJECT'.
+
+    Looks for a line containing 'Verdict:'. If none is found, falls back to
+    scanning the full text for the last occurrence of either keyword.
+    Defaults to 'REJECT' if neither is found — fail-closed is correct for a
+    commit gate.
+    """
+    verdict = "REJECT"  # fail-closed default
+    verdict_found = False
+
+    for line in text.splitlines():
+        upper = line.upper()
+        if "VERDICT:" in upper:
+            if "APPROVE" in upper:
+                verdict = "APPROVE"
+            else:
+                verdict = "REJECT"
+            verdict_found = True
+            break
+
+    if not verdict_found:
+        # Scan entire text; last explicit keyword wins
+        upper_text = text.upper()
+        approve_pos = upper_text.rfind("APPROVE")
+        reject_pos = upper_text.rfind("REJECT")
+        if approve_pos > reject_pos:
+            verdict = "APPROVE"
+        # else stays REJECT
+
+    return verdict, text.strip()
+
+
+def judge_guide_revision(
+    original_guide: str,
+    proposed_guide: str,
+    failure_samples: list[dict],
+) -> dict:
+    """Run the 2-model judge council on a proposed guide revision.
+
+    Haiku 4.5 (fast, cheap) is called first for a quick screen, then
+    Opus 4.8 (authoritative) for a deeper review. Both must emit APPROVE
+    before `council_approved` is True.
+
+    Args:
+        original_guide: The current orchestrator.md content before any changes.
+        proposed_guide: The revised orchestrator.md proposed by the improver.
+        failure_samples: The failure buffer that motivated the revision.
+
+    Returns:
+        dict with keys: haiku_verdict, opus_verdict, haiku_reason,
+        opus_reason, council_approved.
+    """
+    prompt = _build_judge_prompt(original_guide, proposed_guide, failure_samples)
+
+    haiku_text = _call_judge(HAIKU_JUDGE_MODEL, prompt)
+    haiku_verdict, haiku_reason = _parse_verdict(haiku_text)
+
+    opus_text = _call_judge(OPUS_JUDGE_MODEL, prompt)
+    opus_verdict, opus_reason = _parse_verdict(opus_text)
+
+    council_approved = haiku_verdict == "APPROVE" and opus_verdict == "APPROVE"
+
+    return {
+        "haiku_verdict": haiku_verdict,
+        "opus_verdict": opus_verdict,
+        "haiku_reason": haiku_reason,
+        "opus_reason": opus_reason,
+        "council_approved": council_approved,
+    }
+
+
+def _log_council_rejection(council: dict, proposed: str) -> None:
+    """Append a JSONL entry to the council rejections log."""
+    COUNCIL_REJECTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    proposed_sha = hashlib.sha256(proposed.encode()).hexdigest()[:12]
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "proposed_sha": proposed_sha,
+        "haiku_verdict": council["haiku_verdict"],
+        "opus_verdict": council["opus_verdict"],
+        "haiku_reason": council["haiku_reason"],
+        "opus_reason": council["opus_reason"],
+    }
+    with COUNCIL_REJECTIONS_PATH.open("a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 
 def _extract_revised(text: str) -> Optional[str]:
@@ -133,7 +309,12 @@ def improve(
     wait: bool = True,
     timeout: float = 1800,
 ) -> dict:
-    """Run one Ralph pass. Returns a status dict."""
+    """Run one Ralph pass. Returns a status dict.
+
+    The --force flag bypasses the min_samples gate but the judge council still
+    gates the final commit. A force-run with a council rejection logs to
+    state/ralph/council_rejections.jsonl and returns without committing.
+    """
     last_ts = observations.last_improvement_ts()
     samples = observations.failure_samples(since_ts=last_ts)
     if len(samples) < min_samples and not force:
@@ -194,6 +375,21 @@ def improve(
             "agent_id": agent_id,
             "samples": len(samples),
             "guide_sha": new_sha,
+        }
+
+    # Run the judge council before committing any change to the guide.
+    # Both models must approve; force=True still passes through this gate.
+    council = judge_guide_revision(current_guide, revised, samples)
+    if not council["council_approved"]:
+        _log_council_rejection(council, revised)
+        return {
+            "status": "council_rejected",
+            "agent_id": agent_id,
+            "samples": len(samples),
+            "haiku_verdict": council["haiku_verdict"],
+            "opus_verdict": council["opus_verdict"],
+            "haiku_reason": council["haiku_reason"],
+            "opus_reason": council["opus_reason"],
         }
 
     GUIDE_PATH.write_text(revised)
