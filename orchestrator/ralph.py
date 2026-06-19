@@ -191,10 +191,14 @@ def _parse_verdict(text: str) -> tuple[str, str]:
     for line in text.splitlines():
         upper = line.upper()
         if "VERDICT:" in upper:
-            if "APPROVE" in upper:
-                verdict = "APPROVE"
-            else:
+            # Check REJECT first so ties go to REJECT (fail-closed for a commit gate).
+            # A verbose rejection like "Verdict: REJECT, cannot APPROVE criterion 1"
+            # contains both words; checking REJECT first prevents a false-approve.
+            if "REJECT" in upper:
                 verdict = "REJECT"
+            elif "APPROVE" in upper:
+                verdict = "APPROVE"
+            # else stays REJECT (default)
             verdict_found = True
             break
 

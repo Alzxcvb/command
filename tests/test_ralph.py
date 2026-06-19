@@ -107,6 +107,12 @@ class TestParseVerdict:
         verdict, _ = ralph._parse_verdict(text)
         assert verdict == "APPROVE"
 
+    def test_verdict_line_with_both_words_returns_reject(self):
+        """Verbose Opus-style rejection contains both REJECT and APPROVE — must stay REJECT."""
+        text = "Criterion 1: 2, 2: 3, 3: 4, 4: 2\nVerdict: REJECT, I cannot APPROVE this because criteria 1 and 4 are below 3."
+        verdict, _ = ralph._parse_verdict(text)
+        assert verdict == "REJECT"
+
 
 # ---------------------------------------------------------------------------
 # _call_judge
