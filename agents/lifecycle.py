@@ -48,6 +48,11 @@ def available_runtimes() -> list[str]:
     return list(_RUNTIMES.keys())
 
 
+def runtime_is_metered(name: str) -> bool:
+    runtime_cls = _RUNTIMES.get(name)
+    return bool(runtime_cls and getattr(runtime_cls, "metered", False))
+
+
 _SECRET_PATTERNS = [
     re.compile(r"(sk-[A-Za-z0-9\-_]{20,})", re.IGNORECASE),          # OpenAI / generic sk- keys
     re.compile(r"(AKIA[0-9A-Z]{16})", re.IGNORECASE),                  # AWS access key IDs
@@ -59,6 +64,16 @@ def _redact(text: str) -> str:
     for pat in _SECRET_PATTERNS:
         text = pat.sub(lambda m: m.group(0)[:4] + "***REDACTED***", text)
     return text
+
+
+def _redact_state(value):
+    if isinstance(value, str):
+        return _redact(value)
+    if isinstance(value, list):
+        return [_redact_state(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_state(item) for key, item in value.items()}
+    return value
 
 
 def _now_iso() -> str:
@@ -78,7 +93,7 @@ def _write_meta(agent_id: str, meta: dict) -> None:
     tmp_fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w") as f:
-            f.write(json.dumps(meta, indent=2))
+            f.write(json.dumps(_redact_state(meta), indent=2))
         os.replace(tmp_path, target)
     except Exception:
         try:
@@ -145,7 +160,7 @@ def spawn_agent(
     }
     _write_meta(agent_id, meta)
     (work_dir / "checkpoint.md").write_text(
-        f"# Agent {agent_id} Checkpoint\n\n## Task\n{task}\n\n## Status\nstarting\n\n## Notes\n"
+        f"# Agent {agent_id} Checkpoint\n\n## Task\n{_redact(task)}\n\n## Status\nstarting\n\n## Notes\n"
     )
 
     proc = runtime.spawn(task=task, system_prompt=system_prompt, agent_id=agent_id, work_dir=work_dir)
@@ -165,8 +180,8 @@ def _write_result(agent_id: str, status: str, final_text: str = "", error: Optio
     ts = _now_iso()
     data = json.dumps({
         "status": status,
-        "final_text": final_text,
-        "error": error,
+        "final_text": _redact(final_text),
+        "error": _redact(error) if error else None,
         "completed_at": ts,
     }, indent=2)
     target = _agent_dir(agent_id) / "result.json"
@@ -183,7 +198,7 @@ def _write_result(agent_id: str, status: str, final_text: str = "", error: Optio
         raise
     cp = _agent_dir(agent_id) / "checkpoint.md"
     if cp.exists():
-        snippet = (final_text or error or "")[:300].replace("\n", " ")
+        snippet = _redact(final_text or error or "")[:300].replace("\n", " ")
         cp.write_text(cp.read_text() + f"\n[{ts}] status → **{status}**\n> {snippet}\n")
 
 
@@ -289,15 +304,16 @@ def inject_message(agent_id: str, message: str) -> bool:
         meta = _read_meta(agent_id)
     except FileNotFoundError:
         return False
+    redacted_message = _redact(message)
     meta.setdefault("injected_messages", []).append({
-        "message": message,
+        "message": redacted_message,
         "timestamp": _now_iso(),
         "consumed": False,
     })
     _write_meta(agent_id, meta)
     cp = _agent_dir(agent_id) / "checkpoint.md"
     if cp.exists():
-        cp.write_text(cp.read_text() + f"\n[{_now_iso()}] /btw queued: {message}\n")
+        cp.write_text(cp.read_text() + f"\n[{_now_iso()}] /btw queued: {redacted_message}\n")
     return True
 
 

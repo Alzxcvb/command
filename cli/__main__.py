@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 import time
@@ -18,6 +19,7 @@ from agents.lifecycle import (  # noqa: E402
     continue_agent,
     inject_message,
     kill_agent,
+    runtime_is_metered,
     spawn_agent,
 )
 from agents.registry import (  # noqa: E402
@@ -29,6 +31,22 @@ from agents.registry import (  # noqa: E402
 )
 from core.estimator import estimate  # noqa: E402
 from core.metered_ledger import DEFAULT_DAILY_CAP_USD, get_today_spend  # noqa: E402
+
+
+def _allow_detached_metered() -> bool:
+    return os.environ.get("COMMAND_ALLOW_DETACHED_METERED", "0").strip() == "1"
+
+
+def _reject_detached_metered(runtime: str) -> bool:
+    if not runtime_is_metered(runtime) or _allow_detached_metered():
+        return False
+    print(
+        "error: --detach is disabled for metered runtimes because commandd cannot "
+        "enforce live token budgets after handoff. Set COMMAND_ALLOW_DETACHED_METERED=1 "
+        "to explicitly accept that risk.",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _wait_loop(agent_id: str) -> int:
@@ -69,6 +87,8 @@ def cmd_spawn(args) -> int:
 
     if runtime not in available_runtimes():
         print(f"error: runtime '{runtime}' not registered. available: {available_runtimes()}", file=sys.stderr)
+        return 2
+    if args.detach and _reject_detached_metered(runtime):
         return 2
 
     sys_prompt = ""
@@ -156,6 +176,10 @@ def cmd_btw(args) -> int:
     ok = inject_message(args.agent, args.message)
     print(f"{'queued' if ok else 'failed'}: /btw {args.agent} \"{args.message}\"")
     if ok and args.then_continue:
+        if args.detach:
+            meta = get_agent(args.agent) or {}
+            if _reject_detached_metered(meta.get("runtime", "")):
+                return 2
         new_id = continue_agent(args.agent)
         if new_id:
             print(f"[continued] {args.agent} → {new_id}")
@@ -166,6 +190,10 @@ def cmd_btw(args) -> int:
 
 
 def cmd_continue(args) -> int:
+    if args.detach:
+        meta = get_agent(args.agent) or {}
+        if _reject_detached_metered(meta.get("runtime", "")):
+            return 2
     new_id = continue_agent(args.agent, additional_message=args.message or "")
     if not new_id:
         print(f"[error] agent {args.agent} not found", file=sys.stderr)
@@ -217,6 +245,10 @@ def cmd_jobs(args) -> int:
 
 def cmd_retry(args) -> int:
     from orchestrator.retry import retry_agent
+    if args.detach:
+        meta = get_agent(args.agent) or {}
+        if _reject_detached_metered(meta.get("runtime", "")):
+            return 2
     new_id = retry_agent(args.agent, rationale=args.reason or "")
     if not new_id:
         print(f"[error] could not retry {args.agent}", file=sys.stderr)

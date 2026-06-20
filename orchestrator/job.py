@@ -18,6 +18,7 @@ if str(_REPO_ROOT) not in sys.path:
 import yaml  # noqa: E402
 
 from agents.ids import job_dir as _validated_job_dir, JOB_ID_RE  # noqa: E402
+from agents.lifecycle import _redact as _redact_text, _redact_state  # noqa: E402
 from agents.lifecycle import spawn_agent  # noqa: E402
 from agents.lifecycle import _read_meta as _read_agent_meta  # noqa: E402
 from agents.lifecycle import _write_meta as _write_agent_meta  # noqa: E402
@@ -124,12 +125,16 @@ def _job_dir(job_id: str) -> Path:
     return _validated_job_dir(JOBS_DIR, job_id)
 
 
+def _write_redacted_text(path: Path, text: str) -> None:
+    path.write_text(_redact_text(text))
+
+
 def _write_meta(job_id: str, meta: dict) -> None:
     target = _job_dir(job_id) / "meta.json"
     tmp_fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
     try:
         with os.fdopen(tmp_fd, "w") as f:
-            f.write(json.dumps(meta, indent=2))
+            f.write(json.dumps(_redact_state(meta), indent=2))
         os.replace(tmp_path, target)
     except Exception:
         try:
@@ -210,7 +215,8 @@ def start_job(
             pipeline_result = run_prompt_pipeline(goal)
             if pipeline_result.approved:
                 effective_goal = pipeline_result.optimized_prompt
-            (job_dir / "prompt_pipeline.json").write_text(
+            _write_redacted_text(
+                job_dir / "prompt_pipeline.json",
                 json.dumps({
                     "original_goal": goal,
                     "optimized_prompt": pipeline_result.optimized_prompt,
@@ -218,7 +224,7 @@ def start_job(
                     "drift_flags": pipeline_result.drift_flags,
                     "approved": pipeline_result.approved,
                     "rationale": pipeline_result.architect_rationale,
-                }, indent=2)
+                }, indent=2),
             )
             print(f"[job {job_id}] prompt pipeline: score={pipeline_result.quality_score} approved={pipeline_result.approved}")
         except Exception as e:
@@ -263,7 +269,7 @@ def start_job(
 
     result = get_result(orch_id) or {}
     output = result.get("final_text", "")
-    (job_dir / "breakdown.md").write_text(output)
+    _write_redacted_text(job_dir / "breakdown.md", output)
 
     bd = parse_breakdown(output)
     problems = validate(bd, total_budget_tokens=total_budget_tokens,
@@ -271,7 +277,7 @@ def start_job(
     if bd.parse_errors:
         problems = problems + [f"parse: {e}" for e in bd.parse_errors]
 
-    (job_dir / "tasks.md").write_text(_render_tasks_md(goal, bd, problems))
+    _write_redacted_text(job_dir / "tasks.md", _render_tasks_md(goal, bd, problems))
 
     if problems:
         print(f"[job {job_id}] breakdown problems:")
@@ -319,7 +325,7 @@ def start_job(
             rejection_entry = {
                 "ts": _now_iso(),
                 "job_id": job_id,
-                "task_summary": effective_goal[:200],
+                "task_summary": _redact_text(effective_goal[:200]),
                 "flags": flags,
                 "confidence": judge_result.get("confidence", 0.0),
             }
@@ -341,7 +347,7 @@ def start_job(
         status="completed" if all(m.get("status") == "completed" for m in final) else "completed_with_failures",
         children_summary=summary,
     )
-    (job_dir / "tasks.md").write_text(_render_tasks_md(goal, bd, problems, final))
+    _write_redacted_text(job_dir / "tasks.md", _render_tasks_md(goal, bd, problems, final))
     print(f"[job {job_id}] done. summary: {summary}")
     _append_analytics(job_id, project_hint, summary)
     _maybe_auto_improve(job_id)
