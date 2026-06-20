@@ -53,6 +53,7 @@ class OpenRouterProvider:
         self.client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=self.api_key,
+            timeout=60.0,
         )
 
     def call(self, model, prompt, *, system_prompt=None, max_tokens=1024):
@@ -122,7 +123,7 @@ class OpenAIProvider:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not self.api_key:
             raise ValueError("No OpenAI API key. Set OPENAI_API_KEY.")
-        self.client = OpenAI(api_key=self.api_key)
+        self.client = OpenAI(api_key=self.api_key, timeout=60.0)
 
     @staticmethod
     def _strip(model_id: str) -> str:

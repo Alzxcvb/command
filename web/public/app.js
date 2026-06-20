@@ -129,10 +129,14 @@ function updateSidePanel(data) {
   for (const alt of decision.alternatives || []) {
     const row = document.createElement("div");
     row.className = "alt-model";
-    row.innerHTML = `
-      <span class="alt-name">${alt.model.name}</span>
-      <span class="alt-score">${alt.score}/10 · $${alt.model.costPerMillionInput}/M</span>
-    `;
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "alt-name";
+    nameSpan.textContent = alt.model.name;
+    const scoreSpan = document.createElement("span");
+    scoreSpan.className = "alt-score";
+    scoreSpan.textContent = `${alt.score}/10 · $${alt.model.costPerMillionInput}/M`;
+    row.appendChild(nameSpan);
+    row.appendChild(scoreSpan);
     altEl.appendChild(row);
   }
 
@@ -160,13 +164,26 @@ function buildScoreChart(taskType, selectedModelId) {
         const pct = (m.score / 10) * 100;
         const color = m.id === selectedModelId ? "var(--accent)" : scoreColor(m.score);
 
-        row.innerHTML = `
-          <span class="score-bar-label">${m.name}</span>
-          <div class="score-bar-track">
-            <div class="score-bar-fill" style="width:${pct}%; background:${color}"></div>
-          </div>
-          <span class="score-bar-value">${m.score}</span>
-        `;
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "score-bar-label";
+        labelSpan.textContent = m.name;
+
+        const track = document.createElement("div");
+        track.className = "score-bar-track";
+        const fill = document.createElement("div");
+        fill.className = "score-bar-fill";
+        const safePct = Math.min(100, Math.max(0, pct));
+        fill.style.width = `${safePct}%`;
+        fill.style.background = color;
+        track.appendChild(fill);
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = "score-bar-value";
+        valueSpan.textContent = String(m.score);
+
+        row.appendChild(labelSpan);
+        row.appendChild(track);
+        row.appendChild(valueSpan);
         chartEl.appendChild(row);
       }
     });

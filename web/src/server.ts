@@ -19,7 +19,7 @@ import { classifyByRules, type ClassificationResult } from "./classifier";
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '32kb' }));
 app.use(express.static(path.join(__dirname, "../public")));
 
 const PORT = process.env.PORT ?? 3000;
@@ -94,7 +94,6 @@ app.post("/api/route", async (req, res) => {
   } catch (err: any) {
     res.status(502).json({
       error: "Model call failed",
-      detail: err.message,
       classification,
       selectedModel: model,
     });
@@ -147,6 +146,12 @@ app.get("*", (_req, res) => {
 
 // --- Start ---
 
-app.listen(PORT, () => {
-  console.log(`AI Model Router web demo running at http://localhost:${PORT}`);
+const HOST = process.env.HOST ?? '127.0.0.1';
+app.listen(Number(PORT), HOST, () => {
+  if (HOST !== '127.0.0.1' && HOST !== 'localhost') {
+    console.warn(
+      `[WARNING] Server bound to ${HOST} — this exposes unauthenticated model calls to the network.`
+    );
+  }
+  console.log(`AI Model Router web demo running at http://${HOST}:${PORT}`);
 });

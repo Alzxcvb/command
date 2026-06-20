@@ -22,11 +22,15 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import signal
 import socket
+import tempfile
 import threading
 import time
 from pathlib import Path
+
+_AGENT_ID_RE = re.compile(r"^agt_[0-9a-f]{10}$")
 
 REPO_ROOT = Path(__file__).resolve().parent
 STATE_ROOT = REPO_ROOT / "state"
@@ -48,7 +52,12 @@ def _log(msg: str) -> None:
 
 
 def _meta_path(agent_id: str) -> Path:
-    return AGENTS_DIR / agent_id / "meta.json"
+    if not _AGENT_ID_RE.fullmatch(agent_id):
+        raise ValueError(f"invalid agent_id: {agent_id!r}")
+    path = (AGENTS_DIR / agent_id).resolve()
+    if AGENTS_DIR.resolve() not in path.parents:
+        raise ValueError(f"agent path escaped state root: {agent_id!r}")
+    return path / "meta.json"
 
 
 def _read_meta(agent_id: str) -> dict | None:
@@ -63,7 +72,18 @@ def _read_meta(agent_id: str) -> dict | None:
 
 def _write_meta(agent_id: str, meta: dict) -> None:
     meta["updated_at"] = _now_iso()
-    _meta_path(agent_id).write_text(json.dumps(meta, indent=2))
+    target = _meta_path(agent_id)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(json.dumps(meta, indent=2))
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _watchdog(agent_id: str, pid: int, budget_tokens: int) -> None:
@@ -103,6 +123,9 @@ def _watchdog(agent_id: str, pid: int, budget_tokens: int) -> None:
 
 
 def _handle_handoff(agent_id: str) -> None:
+    if not _AGENT_ID_RE.fullmatch(agent_id):
+        _log(f"warning: rejecting handoff for invalid agent_id {agent_id!r}")
+        return
     meta = _read_meta(agent_id)
     if meta is None:
         _log(f"warning: handoff for {agent_id} but no readable meta.json — ignoring")
@@ -111,6 +134,13 @@ def _handle_handoff(agent_id: str) -> None:
     if not pid:
         _log(f"warning: handoff for {agent_id} has no pid in meta.json — ignoring")
         return
+    metered = meta.get("metered", False)
+    if metered:
+        _log(
+            f"WARNING: {agent_id} is a metered runtime in detached mode. "
+            f"Token accounting is inactive after CLI exit (see docs/BLOCKERS.md). "
+            f"Budget enforcement relies on PID watchdog only."
+        )
     budget = int(meta.get("budget_tokens", 0) or 0)
     threading.Thread(
         target=_watchdog,
@@ -139,6 +169,8 @@ def main() -> None:
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(str(SOCK_PATH))
+        SOCK_PATH.chmod(0o600)
+        STATE_ROOT.chmod(0o700)
         server.listen(8)
         _log(f"listening on {SOCK_PATH} (pid {os.getpid()})")
         while True:

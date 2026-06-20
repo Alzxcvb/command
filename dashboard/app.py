@@ -8,6 +8,8 @@ import threading
 import time
 from pathlib import Path
 
+import socket as _socket
+
 import streamlit as st
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +36,23 @@ from orchestrator.job import list_jobs, start_job  # noqa: E402
 from orchestrator.ralph import improve as ralph_improve, pending_failure_count  # noqa: E402
 from orchestrator.retry import retry_agent  # noqa: E402
 
+def _check_localhost_binding() -> None:
+    """Warn if dashboard appears to be exposed beyond localhost."""
+    # Streamlit doesn't expose its bind address at runtime; we check
+    # environment hints instead.
+    server_address = os.environ.get("STREAMLIT_SERVER_ADDRESS", "localhost")
+    if server_address not in ("localhost", "127.0.0.1", "::1"):
+        st.error(
+            "**Security warning:** Dashboard appears to be bound to "
+            f"`{server_address}`. This exposes agent spawn/kill/retry controls "
+            "to the network without authentication. Set "
+            "`STREAMLIT_SERVER_ADDRESS=localhost` or add an auth proxy."
+        )
+        st.stop()
+
+
 st.set_page_config(page_title="Command — Agent Center", layout="wide", page_icon="🛰️")
+_check_localhost_binding()
 
 # Top bar: title + metered spend + refresh controls
 top_left, top_mid, top_right = st.columns([4, 3, 2])

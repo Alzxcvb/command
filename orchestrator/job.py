@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -15,6 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
+from agents.ids import job_dir as _validated_job_dir, JOB_ID_RE  # noqa: E402
 from agents.lifecycle import spawn_agent  # noqa: E402
 from agents.lifecycle import _read_meta as _read_agent_meta  # noqa: E402
 from agents.lifecycle import _write_meta as _write_agent_meta  # noqa: E402
@@ -66,13 +69,16 @@ def judge_spawn_plan(
 ) -> dict:
     """Evaluate a spawn plan before agents fire. Returns approved/flags/confidence.
 
-    Defaults to approved=True on any error so the job is never hard-blocked.
+    Defaults to approved=True on provider errors unless COMMAND_REVIEW_FAIL_CLOSED=1.
     """
-    _default: dict = {"approved": True, "flags": [], "confidence": 0.0}
+    import os as _os
+    fail_closed = _os.environ.get("COMMAND_REVIEW_FAIL_CLOSED", "0").strip() == "1"
+    _default: dict = {"approved": not fail_closed, "flags": ["review_error"], "confidence": 0.0}
     try:
         from router.providers import OpenRouterProvider
         provider = OpenRouterProvider()
-    except Exception:
+    except Exception as e:
+        _default["flags"] = [f"provider_init_failed: {e}"]
         return _default
 
     spawns_text = ""
@@ -105,7 +111,8 @@ def judge_spawn_plan(
             "flags": list(result.get("flags", [])),
             "confidence": float(result.get("confidence", 0.0)),
         }
-    except Exception:
+    except Exception as e:
+        _default["flags"] = [f"review_parse_failed: {e}"]
         return _default
 
 
@@ -114,11 +121,22 @@ def _now_iso() -> str:
 
 
 def _job_dir(job_id: str) -> Path:
-    return JOBS_DIR / job_id
+    return _validated_job_dir(JOBS_DIR, job_id)
 
 
 def _write_meta(job_id: str, meta: dict) -> None:
-    (_job_dir(job_id) / "meta.json").write_text(json.dumps(meta, indent=2))
+    target = _job_dir(job_id) / "meta.json"
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(json.dumps(meta, indent=2))
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _read_meta(job_id: str) -> dict:
@@ -517,11 +535,13 @@ def list_jobs() -> list[dict]:
     if not JOBS_DIR.exists():
         return []
     out = []
-    for d in sorted(JOBS_DIR.iterdir()):
-        m = d / "meta.json"
-        if m.exists():
+    for d in sorted(JOBS_DIR.iterdir(), reverse=True):
+        if not JOB_ID_RE.fullmatch(d.name):
+            continue
+        meta_path = d / "meta.json"
+        if meta_path.exists():
             try:
-                out.append(json.loads(m.read_text()))
-            except Exception:
-                pass
+                out.append(json.loads(meta_path.read_text()))
+            except (OSError, json.JSONDecodeError):
+                continue
     return out

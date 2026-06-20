@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
+import tempfile
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+from .ids import agent_dir as _validated_agent_dir
 
 from .runtimes.base import (
     CheckpointMarker,
@@ -44,12 +48,25 @@ def available_runtimes() -> list[str]:
     return list(_RUNTIMES.keys())
 
 
+_SECRET_PATTERNS = [
+    re.compile(r"(sk-[A-Za-z0-9\-_]{20,})", re.IGNORECASE),          # OpenAI / generic sk- keys
+    re.compile(r"(AKIA[0-9A-Z]{16})", re.IGNORECASE),                  # AWS access key IDs
+    re.compile(r"(api[_-]?key['\"]?\s*[:=]\s*['\"]?)([A-Za-z0-9\-_]{20,})", re.IGNORECASE),
+]
+
+
+def _redact(text: str) -> str:
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(lambda m: m.group(0)[:4] + "***REDACTED***", text)
+    return text
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _agent_dir(agent_id: str) -> Path:
-    return AGENTS_DIR / agent_id
+    return _validated_agent_dir(AGENTS_DIR, agent_id)
 
 
 def _read_meta(agent_id: str) -> dict:
@@ -57,7 +74,18 @@ def _read_meta(agent_id: str) -> dict:
 
 
 def _write_meta(agent_id: str, meta: dict) -> None:
-    (_agent_dir(agent_id) / "meta.json").write_text(json.dumps(meta, indent=2))
+    target = _agent_dir(agent_id) / "meta.json"
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(json.dumps(meta, indent=2))
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _update_meta(agent_id: str, **changes) -> dict:
@@ -70,7 +98,7 @@ def _update_meta(agent_id: str, **changes) -> dict:
 
 def _append_log(agent_id: str, line: str, stream: str = "stdout") -> None:
     with (_agent_dir(agent_id) / f"{stream}.log").open("a") as f:
-        f.write(line + "\n")
+        f.write(_redact(line) + "\n")
 
 
 def spawn_agent(
@@ -135,12 +163,24 @@ def spawn_agent(
 
 def _write_result(agent_id: str, status: str, final_text: str = "", error: Optional[str] = None) -> None:
     ts = _now_iso()
-    (_agent_dir(agent_id) / "result.json").write_text(json.dumps({
+    data = json.dumps({
         "status": status,
         "final_text": final_text,
         "error": error,
         "completed_at": ts,
-    }, indent=2))
+    }, indent=2)
+    target = _agent_dir(agent_id) / "result.json"
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(data)
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     cp = _agent_dir(agent_id) / "checkpoint.md"
     if cp.exists():
         snippet = (final_text or error or "")[:300].replace("\n", " ")
