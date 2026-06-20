@@ -179,7 +179,7 @@ def _render_agent_card(a: dict, active: bool, *, key_prefix: str = "") -> None:
         head = st.columns([3, 2, 2, 2, 1, 1, 1])
         head[0].markdown(f"**`{a['agent_id']}`**")
         head[0].caption((a.get("task") or "")[:160])
-        head[1].markdown(f"runtime: `{a['runtime']}`")
+        head[1].markdown(f"runtime: `{a.get('runtime', '?')}`")
         head[1].caption(f"model: `{a.get('model') or '—'}`")
         used = a.get("tokens_used") or 0
         cap_t = a.get("budget_tokens") or 0
